@@ -1,0 +1,133 @@
+ompt:
+
+Build a complete animated React app UI using TailwindCSS and Framer Motion for a project named "BOLO" (Sign Detection App).
+The UI must look cartoonic, fun, educational, and interactive, like a playful learning game for kids but with smooth, professional animations.
+Use soft gradient backgrounds, rounded components, bouncy transitions, and subtle glowing effects.
+
+Project setup is already done with Vite + Tailwind — just generate the React pages and components.
+
+🌈 Theme Style:
+
+Cartoonic & animated with light pastel colors
+
+Use Framer Motion for transitions (page enter/exit, button hover, etc.)
+
+Fonts: Poppins / Comic Neue
+
+Components must be modern, responsive, and simple
+
+Tailwind only (no Bootstrap)
+
+Use emoji icons and smooth transitions wherever possible
+
+📄 Pages Required:
+🏠 1. Home Page
+
+Title: “🖐️ BOLO — Learn to Speak with Signs”
+
+Centered animated title (motion bounce-in)
+
+Subtext: “Learn, Practice, and Master Sign Language Alphabets”
+
+Button: “Start Learning” → navigates to Loading Page
+
+Add cute waving hand animation or character on screen corner
+
+⏳ 2. Loading Page
+
+Animated loader (Framer Motion spinner or looping emoji)
+
+Text: “Preparing your sign learning experience…”
+
+After 7–8 seconds, auto-navigate to Name Input Page
+
+Background: gradient (baby blue → light pink)
+
+Add some floating bubbles or sparkles (CSS animation)
+
+👤 3. Name Input Page
+
+Animated card in center asking: “What’s your name?”
+
+Cartoon hand or smiley face beside input field
+
+Input: rounded text field with typing animation
+
+Button: “Continue” → navigates to Sign Detection Page
+
+Background: light gradient with fun floating shapes
+
+✋ 4. Sign Detection Page
+
+Split screen layout (responsive):
+
+Left Side: Current alphabet + sample sign video (or image placeholder)
+
+Right Side: Live webcam preview (integrated with Teachable Machine)
+
+Top text: “Show the sign for letter: A”
+
+Button: “Start Detection” → triggers countdown (3, 2, 1)
+
+On success: green check animation (✅ + confetti)
+
+On fail: red cross with shake animation (❌ try again)
+
+Auto move to next alphabet after success
+
+Animated progress bar showing alphabet completion
+
+Background: playful gradient (like sky-blue to soft yellow)
+
+🎉 5. Result / Congratulations Page
+
+Text: “🎉 Great Job, [Name]! You’ve signed your full name!”
+
+Subtext: “You’re one step closer to mastering sign language.”
+
+Show a looping celebration animation or confetti rain
+
+Button 1: “Replay Session”
+
+Button 2: “Send Video to Email”
+
+Add bouncing celebratory character or hand sign emojis
+
+🧩 Extra Components
+
+Navbar with animated logo (BOLO text with waving emoji)
+
+Animated background with Framer Motion or CSS floating shapes
+
+Sound effect placeholders for success/failure
+
+Smooth route transitions using AnimatePresence
+
+⚙️ Tech Info:
+
+Use React Router for navigation between pages
+
+Tailwind for styling
+
+Framer Motion for animations
+
+Keep components in /src/pages and /src/components folders
+
+Teachable Machine code will be injected later in Sign Detection Page
+
+Deliverables:
+
+Home.jsx
+
+Loading.jsx
+
+NameInput.jsx
+
+Detection.jsx
+
+Result.jsx
+
+Shared components: Navbar.jsx, AnimatedButton.jsx, BackgroundShapes.jsx
+
+Goal:
+A complete cartoonic and lively front-end for BOLO app that feels like an animated learning experience, smooth and interactive from start to finish.
