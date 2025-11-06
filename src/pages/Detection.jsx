@@ -1,7 +1,7 @@
 import { motion, AnimatePresence } from 'framer-motion';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { FiArrowRight, FiZap, FiVolumeX, FiRefreshCcw, FiCheckCircle, FiXCircle, FiVideoOff } from 'react-icons/fi'; // Added FiVideoOff
+import { FiArrowRight, FiZap, FiVolumeX, FiRefreshCcw, FiCheckCircle, FiXCircle, FiVideoOff } from 'react-icons/fi';
 
 // Import Teachable Machine Libraries (must be installed via npm: @tensorflow/tfjs and @teachablemachine/image)
 import * as tmImage from '@teachablemachine/image';
@@ -10,6 +10,9 @@ import * as tf from '@tensorflow/tfjs';
 // --- Teachable Machine Constants ---
 const MODEL_URL = '/my_model/model.json';
 const METADATA_URL = '/my_model/metadata.json';
+// Define the confidence threshold for a successful match
+const CONFIDENCE_THRESHOLD = 0.8; 
+const MAX_ATTEMPT_TIME = 5000; // 5 seconds for the user to sign after countdown
 
 // --- Helper Components for Animation ---
 const Navbar = () => (
@@ -25,6 +28,7 @@ const AnimatedButton = ({ onClick, children, className = "", type = 'button', di
     if (disabled) {
         baseStyle += " bg-gray-400 text-gray-700 shadow-[4px_4px_0px_#4b5563] cursor-not-allowed";
     } else if (result === true) {
+        // Button is enabled if result is true, to allow clicking 'Next Letter'
         baseStyle += " bg-teal-400 text-gray-800 shadow-[8px_8px_0px_#1f2937] hover:bg-teal-300";
     } else if (result === false) {
         baseStyle += " bg-pink-500 text-white shadow-[8px_8px_0px_#1f2937] hover:bg-pink-400";
@@ -32,14 +36,17 @@ const AnimatedButton = ({ onClick, children, className = "", type = 'button', di
         baseStyle += " bg-yellow-400 text-gray-800 hover:bg-yellow-300 shadow-[8px_8px_0px_#1f2937]";
     }
 
+    // Override baseStyle for disabled state when result is true ONLY if it's the last letter
+    const isDisabled = disabled && !(result === true);
+
     return (
         <motion.button
             type={type}
             onClick={onClick}
             className={`${baseStyle} ${className} flex items-center justify-center relative overflow-hidden`}
-            whileHover={!disabled ? { scale: 1.03, boxShadow: "12px 12px 0px #1f2937", y: -2, rotate: 1 } : {}} 
-            whileTap={!disabled ? { scale: 0.95, boxShadow: "4px 4px 0px #1f2937", y: 0, rotate: -1 } : {}} 
-            disabled={disabled}
+            whileHover={!isDisabled ? { scale: 1.03, boxShadow: "12px 12px 0px #1f2937", y: -2, rotate: 1 } : {}} 
+            whileTap={!isDisabled ? { scale: 0.95, boxShadow: "4px 4px 0px #1f2937", y: 0, rotate: -1 } : {}} 
+            disabled={isDisabled}
         >
             {children}
         </motion.button>
@@ -98,7 +105,7 @@ const signVideos = {
 // --- CUSTOM HOOK: useTeachableMachine ---
 const useTeachableMachine = (modelURL, metadataURL, webcamRef, isPredictionActive) => {
     const [isModelLoading, setIsModelLoading] = useState(true);
-    const [isWebcamError, setIsWebcamError] = useState(false); // New state for camera error
+    const [isWebcamError, setIsWebcamError] = useState(false); 
     const [model, setModel] = useState(null);
     const [webcam, setWebcam] = useState(null);
     const [prediction, setPrediction] = useState(null);
@@ -112,32 +119,29 @@ const useTeachableMachine = (modelURL, metadataURL, webcamRef, isPredictionActiv
                 // Load model first
                 const loadedModel = await tmImage.load(modelURL, metadataURL);
                 setModel(loadedModel);
-                setIsModelLoading(false);
 
                 // Setup webcam
                 const flip = true; 
-                // Increased canvas size to better fill the container, although CSS controls final display
                 const webcamInstance = new tmImage.Webcam(480, 360, flip); 
                 
                 await webcamInstance.setup(); 
                 await webcamInstance.play();
                 setWebcam(webcamInstance);
+                setIsModelLoading(false);
                 
                 // Append canvas to the ref container
                 if (webcamRef.current) {
                     webcamRef.current.innerHTML = ''; 
                     webcamRef.current.appendChild(webcamInstance.canvas);
-                    // Ensure the canvas stretches and covers the area
                     webcamInstance.canvas.style.width = '100%';
                     webcamInstance.canvas.style.height = '100%';
                     webcamInstance.canvas.style.objectFit = 'cover';
-                    webcamInstance.canvas.style.borderRadius = '1.5rem'; // rounded-3xl
+                    webcamInstance.canvas.style.borderRadius = '1.5rem'; 
                 }
                 
             } catch (error) {
                 console.error("Failed to load Teachable Machine model or setup webcam:", error);
                 
-                // Check specifically for media device errors (camera access)
                 if (error.name === 'NotAllowedError' || error.name === 'NotFoundError') {
                     setIsWebcamError(true);
                 } else {
@@ -187,8 +191,10 @@ const useTeachableMachine = (modelURL, metadataURL, webcamRef, isPredictionActiv
     // 4. Control Prediction Loop 
     useEffect(() => {
         if (isPredictionActive) {
+            // Start the prediction loop only when active
             rafId.current = window.requestAnimationFrame(predict);
         } else {
+            // Stop the prediction loop when inactive
             if (rafId.current) {
                 cancelAnimationFrame(rafId.current);
                 rafId.current = null;
@@ -211,13 +217,15 @@ const Detection = () => {
   const { userName = 'USER', nameLetters = ['A', 'B', 'C'] } = location.state || {};
   
   const [currentLetterIndex, setCurrentLetterIndex] = useState(0);
-  const currentLetter = nameLetters[currentLetterIndex] || 'A';
+  const currentLetter = nameLetters[currentLetterIndex] ? nameLetters[currentLetterIndex].toUpperCase() : 'A';
   const [isDetecting, setIsDetecting] = useState(false);
   const [result, setResult] = useState(null); // null, true, or false
   const [countdown, setCountdown] = useState(3);
   const navigate = useNavigate();
   
   const webcamContainerRef = useRef(null);
+  const failTimerRef = useRef(null); 
+  const isSuccessTransitionRef = useRef(false); 
 
   const { isModelLoading, isWebcamError, prediction } = useTeachableMachine(
     MODEL_URL, 
@@ -229,14 +237,32 @@ const Detection = () => {
   const totalLetters = nameLetters.length;
   const progressPercent = ((currentLetterIndex) / totalLetters) * 100;
 
-  // Countdown effect
+  // Countdown effect (Handles countdown and starts the fail timer when countdown hits 0)
   useEffect(() => {
+    // Clear any existing fail timer when countdown starts or is manually cleared
+    if (isDetecting && countdown > 0 && failTimerRef.current) {
+         clearTimeout(failTimerRef.current);
+         failTimerRef.current = null;
+    }
+    
     if (!isDetecting || countdown === 0) return;
     
     const timer = setInterval(() => {
       setCountdown(prev => {
         if (prev <= 1) {
           clearInterval(timer);
+          
+          // Logic to start the FAIL timer when countdown hits zero
+          if (prev === 1) {
+              failTimerRef.current = setTimeout(() => {
+                  // Only proceed to fail if a success transition has NOT started
+                  if (isDetecting && !isSuccessTransitionRef.current) { 
+                      console.log("TIME'S UP! Failed to achieve correct sign.");
+                      setIsDetecting(false);
+                      setResult(false); // Signal failure - Try again
+                  }
+              }, MAX_ATTEMPT_TIME);
+          }
           return 0; 
         }
         return prev - 1;
@@ -247,43 +273,77 @@ const Detection = () => {
   }, [isDetecting, countdown]);
 
 
-  // Main Detection Logic
-  const handleStartDetection = () => {
+  // --- REAL-TIME SUCCESS DETECTION EFFECT (THE CORE LOGIC) ---
+  useEffect(() => {
+    // Only proceed if detection is active, countdown is finished, and we have a prediction
+    if (isDetecting && countdown === 0 && prediction) {
+        const topClass = prediction.className.toUpperCase();
+        const probability = prediction.probability;
+        
+        // 1. Check for success condition (Real-Time Match)
+        if (topClass === currentLetter && probability >= CONFIDENCE_THRESHOLD) {
+            console.log(`SUCCESS CONDITION MET! Detected ${topClass} with ${(probability * 100).toFixed(1)}%`);
+            
+            // Immediately flag that success has been achieved (prevents fail timer race condition)
+            isSuccessTransitionRef.current = true;
+            
+            // Stop the max attempt timer immediately upon success
+            if (failTimerRef.current) {
+                clearTimeout(failTimerRef.current);
+                failTimerRef.current = null;
+            }
+            
+            // Step 1: Halt the detection/prediction loop and show success visual
+            setIsDetecting(false); 
+            setResult(true); // Signal success
+            
+            // NO AUTO-ADVANCE: The user must click the button to proceed.
+
+            // Set a brief timer to clear the success flag after the animation period.
+            const clearSuccessFlagTimer = setTimeout(() => {
+                isSuccessTransitionRef.current = false;
+            }, 1500);
+
+            return () => clearTimeout(clearSuccessFlagTimer);
+        }
+    }
+  }, [prediction, isDetecting, countdown, currentLetter]);
+
+
+  // Main Detection Action (Handles Start, Try Again, and Next Letter clicks)
+  const handleDetectionAction = () => {
+    // 1. Handle SUCCESS/NEXT button click
+    if (result === true) {
+        // If all letters are complete, navigate to results
+        if (currentLetterIndex === nameLetters.length - 1) {
+            navigate('/result');
+            return;
+        }
+        
+        // Move to the next letter
+        setCurrentLetterIndex(prev => prev + 1);
+        setResult(null); // Clear success result
+        
+        // Start the detection for the NEW letter (auto-starts countdown)
+        setIsDetecting(true);
+        setCountdown(3); 
+        return; 
+    }
+
+    // 2. Handle START/TRY AGAIN click
+    // Prevent starting if prerequisites aren't met
     if (isModelLoading || isDetecting || isWebcamError) return;
 
-    setResult(null);
+    // Clear previous states/timers
+    if (result !== null) setResult(null); 
+    if (failTimerRef.current) {
+        clearTimeout(failTimerRef.current);
+        failTimerRef.current = null;
+    }
+    
+    // Start the detection flow (which begins with the countdown)
     setIsDetecting(true); 
     setCountdown(3);
-    
-    const countdownDelay = 3000;
-    const detectionTime = 2500; 
-
-    const predictionTimeout = setTimeout(() => {
-      setIsDetecting(false); 
-      
-      let isCorrect = false;
-      if (prediction && prediction.className.toUpperCase() === currentLetter && prediction.probability > 0.8) {
-        isCorrect = true;
-      } else {
-         console.log(`Failed! Best guess was ${prediction?.className} (${(prediction?.probability * 100).toFixed(1)}%)`);
-      }
-      
-      setResult(isCorrect);
-      
-      if (isCorrect) {
-        setTimeout(() => {
-          if (currentLetterIndex < nameLetters.length - 1) {
-            setCurrentLetterIndex(prev => prev + 1);
-            setResult(null); 
-          } else {
-            navigate('/result'); 
-          }
-        }, 1500); 
-      }
-
-    }, countdownDelay + detectionTime);
-    
-    return () => clearTimeout(predictionTimeout);
   };
 
   const getButtonText = () => {
@@ -297,8 +357,11 @@ const Detection = () => {
         if (countdown > 0) {
              return `GET READY! (${countdown})`;
         }
-        return `SIGN NOW! ANALYZING...`;
+        return `SIGN ${currentLetter} NOW! ANALYZING...`;
     } else if (result === true) {
+        if (currentLetterIndex === nameLetters.length - 1) {
+            return <><FiCheckCircle className='mr-2' /> DONE! See Final Results</>;
+        }
         return <><FiCheckCircle className='mr-2' /> BOOM! Next Letter!</>;
     } else if (result === false) {
         return <><FiRefreshCcw className='mr-2' /> Try That Again, Partner!</>;
@@ -363,6 +426,8 @@ const Detection = () => {
             
             <div className="aspect-video bg-gray-900 flex items-center justify-center">
               <video 
+                // key={currentLetter} forces the video element to re-render and restart for the new letter
+                key={currentLetter} 
                 src={signVideos[currentLetter] || signVideos['A']} 
                 autoPlay 
                 loop 
@@ -384,7 +449,7 @@ const Detection = () => {
             </div>
           </motion.div>
           
-          {/* Right Side - Webcam / Detection Panel (LIVE CAMERA FEED) */}
+          {/* Right Side - Webcam / Detection Panel (LIVE CAMERA FEED - MODIFIED) */}
           <motion.div 
             className="bg-white rounded-3xl shadow-xl border-4 border-gray-800 flex flex-col overflow-hidden"
             initial={{ x: 100, rotate: 5, opacity: 0 }}
@@ -396,152 +461,108 @@ const Detection = () => {
               <h2 className="text-2xl font-black text-white filter drop-shadow">YOUR TURN: Sign {currentLetter}</h2>
             </div>
             
-            {/* Webcam Container: Webcam is ON and VISIBLE here */}
+            {/* Webcam Container: Webcam is ON and VISIBLE here - CLEAN VIEW */}
             <div className="flex-1 bg-gray-900 flex items-center justify-center relative aspect-video overflow-hidden">
                 <div 
                     ref={webcamContainerRef} 
                     className="w-full h-full flex items-center justify-center bg-gray-800"
                 >
                     {/* Webcam canvas is appended here by the hook */}
-                    {(isModelLoading || isWebcamError) && (
-                        <div className="text-center p-8 absolute inset-0 flex flex-col items-center justify-center bg-gray-900 z-10">
-                            {isWebcamError ? (
-                                <>
-                                    <FiVideoOff className="text-6xl mb-4 text-pink-500" />
-                                    <p className="text-pink-400 text-xl font-bold">CAMERA ACCESS BLOCKED</p>
-                                    <p className="text-gray-300 text-sm mt-2">Please enable camera permissions in your browser settings and refresh the page.</p>
-                                </>
-                            ) : (
-                                <>
-                                    <div className="text-6xl mb-4 text-white animate-pulse">📡</div>
-                                    <p className="text-white text-xl font-bold">Loading BOLO AI Model...</p>
-                                </>
-                            )}
-                        </div>
-                    )}
                 </div>
 
-                {/* Initial Prompt Overlay (Semi-transparent over the camera feed) */}
                 <AnimatePresence>
-                    {!isModelLoading && !isWebcamError && !isDetecting && result === null && (
-                        <motion.div 
-                            key="prompt"
-                            className="absolute inset-0 flex flex-col justify-end items-center p-8 z-10 pointer-events-none"
+                    {/* 1. Loading State - Minimal, only if model is loading AND no webcam error */}
+                    {isModelLoading && !isWebcamError && (
+                        <motion.div
+                            key="loading"
+                            className="absolute inset-0 flex items-center justify-center bg-gray-900 z-10"
                             initial={{ opacity: 0 }}
                             animate={{ opacity: 1 }}
                             exit={{ opacity: 0 }}
                         >
-                            {/* Gradient for contrast with the camera feed */}
-                            <div className="absolute inset-0 bg-gradient-to-t from-gray-900/80 to-transparent"></div>
-                            
-                            <div className="text-center relative pointer-events-auto">
-                                <div className="text-6xl mb-2 text-white">✋</div>
-                                <p className="text-white text-xl font-bold">Get Ready! Sign Letter:</p>
-                                <motion.div 
-                                    className="text-7xl font-black text-yellow-400 my-2"
-                                    animate={{ scale: [1, 1.05, 1] }}
-                                    transition={{ duration: 1.5, repeat: Infinity, ease: 'easeInOut' }}
-                                >
-                                    {currentLetter}
-                                </motion.div>
-                                <p className="text-gray-300 text-sm">Position your hand in the view above.</p>
+                            <div className="text-center">
+                                <div className="text-6xl mb-4 text-white animate-pulse">📡</div>
+                                <p className="text-white text-xl font-bold">Loading BOLO AI Model...</p>
+                            </div>
+                        </motion.div>
+                    )}
+
+                    {/* 2. Error State - Must be visible if camera is blocked */}
+                    {isWebcamError && (
+                        <motion.div
+                            key="error"
+                            className="absolute inset-0 flex flex-col items-center justify-center bg-gray-900 z-30"
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                        >
+                            <FiVideoOff className="text-6xl mb-4 text-pink-500" />
+                            <p className="text-pink-400 text-xl font-bold">CAMERA ACCESS BLOCKED</p>
+                            <p className="text-gray-300 text-sm mt-2">Please enable camera permissions in your browser settings and refresh the page.</p>
+                        </motion.div>
+                    )}
+
+                    {/* 3. Minimal Feedback Banner (Countdown/Result) - NOT a full-screen overlay */}
+                    {(!isModelLoading && !isWebcamError) && (isDetecting || result !== null) && (
+                        <motion.div
+                            key="minimal-feedback"
+                            className="absolute top-0 inset-x-0 p-3 z-30 bg-gray-800/90 border-b-4 border-gray-800"
+                            initial={{ y: '-100%', opacity: 0 }}
+                            animate={{ y: '0%', opacity: 1 }}
+                            exit={{ y: '-100%', opacity: 0 }}
+                            transition={{ duration: 0.3 }}
+                        >
+                            <div className="text-center">
+                                {isDetecting && countdown > 0 && (
+                                    <p className="text-3xl font-black text-yellow-400">
+                                        GET READY: {countdown}
+                                    </p>
+                                )}
+                                {isDetecting && countdown === 0 && (
+                                    <p className="text-3xl font-black text-pink-400 animate-pulse">
+                                        SIGNING! ANALYZING...
+                                    </p>
+                                )}
+                                {result === true && (
+                                    <p className="text-3xl font-black text-teal-400">
+                                        <FiCheckCircle className='inline mr-2' /> PERFECT!
+                                    </p>
+                                )}
+                                {result === false && (
+                                    <p className="text-3xl font-black text-pink-400">
+                                        <FiXCircle className='inline mr-2' /> TRY AGAIN!
+                                    </p>
+                                )}
                             </div>
                         </motion.div>
                     )}
                 </AnimatePresence>
-              
-              {/* Prediction Debug/Feedback (Optional) */}
-              {prediction && !isDetecting && !isModelLoading && (
-                  <div className="absolute top-2 left-2 p-2 bg-black/50 text-xs text-white rounded z-30">
-                      Best Guess: {prediction.className}: {(prediction.probability * 100).toFixed(1)}%
+                
+                {/* Real-time prediction display for debugging/feedback */}
+                 {prediction && !isModelLoading && !isWebcamError && (
+                  <div className="absolute bottom-2 left-2 p-2 bg-black/50 text-xs text-white rounded z-30">
+                      Guess: {prediction.className.toUpperCase()}: {(prediction.probability * 100).toFixed(1)}%
                   </div>
               )}
-              
-              {/* Detection overlay - Countdown and Analysis */}
-              <AnimatePresence>
-                {isDetecting && (
-                  <motion.div 
-                    key="detecting"
-                    className="absolute inset-0 bg-black bg-opacity-80 flex items-center justify-center z-20"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                  >
-                    <motion.div 
-                      className="text-center text-white"
-                      initial={{ scale: 0.5 }}
-                      animate={{ scale: 1 }}
-                      transition={{ type: 'spring', stiffness: 200 }}
-                    >
-                      {countdown > 0 ? (
-                          <>
-                            <motion.div 
-                                className="text-9xl font-black text-yellow-400 mb-4"
-                                animate={{ scale: [1, 1.2, 1] }}
-                                transition={{ duration: 1, repeat: Infinity, ease: 'easeInOut' }}
-                            >
-                                {countdown}
-                            </motion.div>
-                            <p className="text-2xl font-bold">GET READY TO BOLO!</p>
-                          </>
-                      ) : (
-                          <>
-                            <div className="text-9xl font-black text-pink-400 mb-4">⚡</div>
-                            <p className="text-2xl font-bold animate-pulse">SIGNING! ANALYZING...</p>
-                          </>
-                      )}
-                      
-                    </motion.div>
-                  </motion.div>
-                )}
-                
-                {/* Result Overlay */}
-                {result !== null && (
-                  <motion.div 
-                    key="result"
-                    className="absolute inset-0 bg-black bg-opacity-80 flex items-center justify-center z-20"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0, transition: { duration: 0.5 } }}
-                  >
-                    <motion.div 
-                      className={`text-[120px] font-black ${result ? 'text-teal-400' : 'text-pink-400'}`}
-                      initial={{ scale: 0, rotate: -180 }}
-                      animate={{ 
-                        scale: [0, 1.2, 1],
-                        rotate: [0, 10, -10, 0],
-                        y: [0, -20, 0]
-                      }}
-                      transition={{ 
-                        duration: 0.8,
-                        ease: [0.68, -0.55, 0.27, 1.55] 
-                      }}
-                    >
-                      {result ? '💥' : '❌'}
-                    </motion.div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
             </div>
             
             <div className="p-6">
               <AnimatedButton
-                onClick={handleStartDetection}
-                disabled={isDetecting || isModelLoading || isWebcamError || (result === true && currentLetterIndex < nameLetters.length - 1)}
+                onClick={handleDetectionAction}
+                // The button is disabled only if an operation is active (isDetecting) or loading/error.
+                // It is ENABLED if result is true or false, allowing for the next step or re-attempt.
+                disabled={isDetecting || isModelLoading || isWebcamError}
                 result={result}
                 className="w-full py-4 text-2xl font-black"
               >
                 {getButtonText()}
               </AnimatedButton>
               
-              <motion.div 
+              <div 
                 className="mt-4 flex items-center justify-between text-base text-gray-800 font-bold"
-                animate={{ opacity: [0.7, 1, 0.7] }}
-                transition={{ duration: 2, repeat: Infinity }}
               >
                 <span>Practicing: {userName}</span>
                 <span>Letter: {currentLetter} ({currentLetterIndex + 1}/{nameLetters.length})</span>
-              </motion.div>
+              </div>
             </div>
           </motion.div>
         </div>

@@ -123,32 +123,40 @@ const NameInput = () => {
     delay: Math.random() * 5
   }));
 
-  const handleSubmit = (e) => {
+    const handleSubmit = (e) => {
     e.preventDefault();
-    if (name.trim()) {
-      setIsSubmitting(true);
-      setTimeout(() => {
-        // Pass the name to the detection page with all letters (including duplicates)
-        const nameInUppercase = name.trim().toUpperCase();
-        const allLetters = nameInUppercase.split('').filter(c => /[A-Z]/.test(c));
-        if (allLetters.length > 0) {
-          navigate('/detection', { 
-            state: { 
-              userName: nameInUppercase,
-              nameLetters: allLetters
-            } 
-          });
-        } else {
-          // If no valid letters found, show error
-          setShake(true);
-          setTimeout(() => setShake(false), 600);
-          setIsSubmitting(false);
-        }
-      }, 1500);
-    } else {
+    if (!name.trim()) {
+      setShake(true);
+      setTimeout(() => setShake(false), 500);
+      return;
+    }
+
+    // Convert name to uppercase and filter only available letters from metadata
+    const availableLetters = ['A', 'B', 'C', 'D'];
+    const validNameLetters = name
+      .toUpperCase()
+      .split('')
+      .filter(letter => availableLetters.includes(letter));
+
+    if (validNameLetters.length === 0) {
+      alert("Please enter a name containing at least one of these letters: A, B, C, D");
       setShake(true);
       setTimeout(() => setShake(false), 600);
+      return;
     }
+
+    setIsSubmitting(true);
+
+    // Add a delay for better UX
+    setTimeout(() => {
+      // Navigate to detection page with validated name letters
+      navigate('/detection', {
+        state: {
+          userName: name,
+          nameLetters: validNameLetters
+        }
+      });
+    }, 1500);
   };
 
   return (
