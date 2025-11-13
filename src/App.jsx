@@ -5,6 +5,7 @@ import Loading from './pages/Loading';
 import NameInput from './pages/NameInput';
 import Detection from './pages/Detection';
 import Result from './pages/Result';
+import Dataset from './pages/Dataset';
 
 function App() {
   return (
@@ -16,6 +17,7 @@ function App() {
           <Route path="/name-input" element={<NameInput />} />
           <Route path="/detection" element={<Detection />} />
           <Route path="/result" element={<Result />} />
+          <Route path="/dataset" element={<Dataset />} />
         </Routes>
       </AnimatePresence>
     </Router>

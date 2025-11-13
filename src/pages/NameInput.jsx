@@ -5,7 +5,6 @@ import { FiArrowRight, FiVolumeX } from 'react-icons/fi';
 
 // --- Helper Components for Animation ---
 
-// Navbar: Minimal and energetic
 const Navbar = () => (
   <nav className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-start items-center z-20 relative">
     <div className="text-4xl font-black tracking-wider text-white filter drop-shadow-lg">
@@ -14,7 +13,6 @@ const Navbar = () => (
   </nav>
 );
 
-// AnimatedButton: Designed to feel 'bouncy' and high-contrast
 const AnimatedButton = ({ onClick, children, className = "", type = 'button', disabled = false }) => {
     let baseStyle = "px-8 py-4 rounded-xl font-extrabold text-xl transition-all duration-300 transform border-4 border-gray-800";
     
@@ -38,7 +36,6 @@ const AnimatedButton = ({ onClick, children, className = "", type = 'button', di
     );
 };
 
-// Component for a constantly wiggling star
 const WiggleStar = ({ size, position }) => (
     <motion.div
         className={`absolute text-${size} ${position} filter drop-shadow opacity-70`}
@@ -56,7 +53,6 @@ const WiggleStar = ({ size, position }) => (
     </motion.div>
 );
 
-// Floating Hand Emojis that move across the screen
 const handEmojis = ['✍️', '👋', '👆', '🤟', '🤚', '🖐️', '✋', '🖖', '👌', '🤌'];
 const FloatingEmoji = ({ id, x, y, size, duration, delay, emoji }) => (
     <motion.div
@@ -85,7 +81,6 @@ const FloatingEmoji = ({ id, x, y, size, duration, delay, emoji }) => (
     </motion.div>
 );
 
-// Bouncing character for the main form icon
 const BouncingCharacter = () => (
     <motion.div 
         className="text-8xl mb-6"
@@ -131,15 +126,17 @@ const NameInput = () => {
       return;
     }
 
-    // Convert name to uppercase and filter only available letters from metadata
-    const availableLetters = ['A', 'B', 'C', 'D'];
+    // FIX: Use all A-Z for validation since signVideos supports the full alphabet.
+    const availableLetters = Array.from({ length: 26 }, (_, i) => String.fromCharCode('A'.charCodeAt(0) + i));
+    
+    // Convert name to uppercase and filter only available letters
     const validNameLetters = name
       .toUpperCase()
       .split('')
       .filter(letter => availableLetters.includes(letter));
 
     if (validNameLetters.length === 0) {
-      alert("Please enter a name containing at least one of these letters: A, B, C, D");
+      alert("Please enter a name containing at least one ASL letter (A-Z) we can check!");
       setShake(true);
       setTimeout(() => setShake(false), 600);
       return;
@@ -149,7 +146,7 @@ const NameInput = () => {
 
     // Add a delay for better UX
     setTimeout(() => {
-      // Navigate to detection page with validated name letters
+      // Navigate to detection page with validated name letters (e.g., ['X', 'Y', 'Z'])
       navigate('/detection', {
         state: {
           userName: name,
