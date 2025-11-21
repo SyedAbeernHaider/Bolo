@@ -20,126 +20,19 @@ import {
 import Confetti from "react-confetti";
 import { useWindowSize } from "react-use";
 import emailjs from "@emailjs/browser";
-
-// --- Firebase Imports ---
-import { storage } from "../firebase"; // Ensure path is correct
+import { storage } from "../firebase";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
-
-// --- FFmpeg Imports ---
 import { FFmpeg } from "@ffmpeg/ffmpeg";
 import { fetchFile, toBlobURL } from "@ffmpeg/util";
-
-// --- Helper Components for Animation and UI ---
-
-// Navbar: Minimal and energetic
-const Navbar = () => (
-  <nav className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-start items-center z-40 relative">
-    <div className="text-3xl font-black tracking-wider text-white filter drop-shadow-lg">
-      <span className="text-yellow-400">B</span>
-      <span className="text-pink-500">O</span>
-      <span className="text-teal-400">L</span>
-      <span className="text-yellow-400">O</span>
-    </div>
-  </nav>
-);
-
-// AnimatedButton (Unchanged)
-const AnimatedButton = ({
-  onClick,
-  children,
-  className = "",
-  variant = "default",
-  disabled = false,
-}) => {
-  let baseStyle =
-    "px-4 py-2 rounded-xl font-extrabold text-lg transition-all duration-300 transform border-4 border-gray-800";
-
-  if (disabled) {
-    baseStyle +=
-      " bg-gray-400 text-gray-700 shadow-[4px_4px_0px_#4b5563] cursor-not-allowed";
-  } else if (variant === "primary") {
-    baseStyle +=
-      " bg-teal-400 text-gray-800 hover:bg-teal-300 shadow-[6px_6px_0px_#1f2937]";
-  } else if (variant === "secondary") {
-    baseStyle +=
-      " bg-yellow-400 text-gray-800 hover:bg-yellow-300 shadow-[6px_6px_0px_#1f2937]";
-  } else {
-    baseStyle +=
-      " bg-white text-gray-800 hover:bg-gray-100 shadow-[6px_6px_0px_#1f2937]";
-  }
-
-  return (
-    <motion.button
-      onClick={onClick}
-      className={`${baseStyle} ${className} flex items-center justify-center relative overflow-hidden`}
-      whileHover={
-        !disabled
-          ? {
-              scale: 1.03,
-              boxShadow: "8px 8px 0px #1f2937",
-              y: -2,
-              rotate: 0.5,
-            }
-          : {}
-      }
-      whileTap={
-        !disabled
-          ? {
-              scale: 0.95,
-              boxShadow: "4px 4px 0px #1f2937",
-              y: 0,
-              rotate: -0.5,
-            }
-          : {}
-      }
-      disabled={disabled}
-    >
-      {children}
-    </motion.button>
-  );
-};
-
-// WiggleStar & FloatingEmoji (Unchanged)
-const WiggleStar = ({ size, position }) => (
-  <motion.div
-    className={`absolute text-${size} ${position} filter drop-shadow opacity-70 z-30`}
-    animate={{ rotate: [0, 30, -30, 0], scale: [1, 1.3, 1] }}
-    transition={{ duration: 2.5, repeat: Infinity, ease: "easeInOut" }}
-  >
-    🌟
-  </motion.div>
-);
-
-const FloatingEmoji = ({ id, x, y, size, duration, delay, emoji }) => (
-  <motion.div
-    key={id}
-    className="absolute text-4xl z-10"
-    style={{ left: `${x}%`, top: `${y}%`, fontSize: `${size}px`, opacity: 0.8 }}
-    animate={{
-      y: [0, -1000],
-      x: [x, x + (Math.random() * 20 - 10)],
-      rotate: [0, 360],
-      opacity: [0.8, 0],
-    }}
-    transition={{
-      duration: duration,
-      delay: delay,
-      repeat: Infinity,
-      ease: "linear",
-    }}
-  >
-    {emoji}
-  </motion.div>
-);
-
-// --- Main Result Component ---
+import Navbar from "./Navbar";
+import AnimatedButton from "./AnimatedButton";
+import { fireworkElements, floatingEmojis } from "../utils/utils";
 
 const Result = () => {
+  const videoRef = useRef(null);
   const navigate = useNavigate();
   const location = useLocation();
   const { width, height } = useWindowSize();
-
-  // Retrieve recorded signs
   const {
     recordedSigns = [],
     userName = "Signer",
@@ -148,16 +41,9 @@ const Result = () => {
 
   const [showConfetti, setShowConfetti] = useState(true);
   const [email, setEmail] = useState("");
-  const [emailStatus, setEmailStatus] = useState(null);
-  const videoRef = useRef(null);
-
-  // Replay States
+  
   const [currentReplayIndex, setCurrentReplayIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(true);
-
-  // FFmpeg States
-  // Processing States
-  // Status: 'idle' | 'merging' | 'uploading' | 'sending_email' | 'success' | 'error'
   const [processStatus, setProcessStatus] = useState("idle");
   const [statusMessage, setStatusMessage] = useState("");
   const [isMerging, setIsMerging] = useState(false);
@@ -171,7 +57,6 @@ const Result = () => {
   const loadFfmpeg = async () => {
     const ffmpeg = ffmpegRef.current;
 
-    // LOGGING: See what ffmpeg is doing in the console
     ffmpeg.on("log", ({ message }) => {
       console.log("FFmpeg Log:", message);
     });
@@ -285,8 +170,6 @@ const Result = () => {
       setIsMerging(false);
     }
   };
-
-  // --- RESOURCE CLEANUP ---
 
   const handleMergeAndSend = async () => {
     if (!ffmpegLoaded) {
@@ -416,11 +299,8 @@ const Result = () => {
     };
   }, [recordedSigns]);
 
-  // --- AUTO-ADVANCE LOGIC ---
   const handleNextReplay = useCallback(() => {
     if (!isPlaying || totalSignsMastered === 0) return;
-    // const nextIndex = (currentReplayIndex + 1) % totalSignsMastered;
-    // setCurrentReplayIndex(nextIndex);
     setCurrentReplayIndex((prev) => (prev + 1) % totalSignsMastered);
     if (videoRef.current) {
       setTimeout(() => {
@@ -433,26 +313,9 @@ const Result = () => {
 
   const handleTogglePlay = () => {
     setIsPlaying((prev) => !prev);
-    // if (videoRef.current) {
-    //   if (isPlaying) videoRef.current.pause();
-    //   else videoRef.current.play().catch((e) => console.error(e));
-    // }
     if (videoRef.current)
       isPlaying ? videoRef.current.pause() : videoRef.current.play();
   };
-
-  // useEffect(() => {
-  //   if (totalSignsMastered > 0  && videoRef.current) {
-  //     const videoElement = videoRef.current;
-  //     if (videoElement) {
-  //       videoElement.onended = handleNextReplay;
-  //       if (isPlaying) videoElement.play().catch((e) => setIsPlaying(false));
-  //       return () => {
-  //         videoElement.onended = null;
-  //       };
-  //     }
-  //   }
-  // }, [totalSignsMastered, isPlaying, handleNextReplay, currentReplayIndex]);
 
   useEffect(() => {
     if (totalSignsMastered > 0 && videoRef.current) {
@@ -487,46 +350,7 @@ const Result = () => {
     return () => clearTimeout(confettiTimer);
   }, []);
 
-  const isValidEmail = (email) => /\S+@\S+\.\S+/.test(email);
-  const handleSubmitEmail = () => {
-    if (!isValidEmail(email)) {
-      alert("Please enter a valid email address.");
-      return;
-    }
-    setEmailStatus("sending");
-    setTimeout(() => {
-      setEmailStatus("sent");
-      setTimeout(() => setEmailStatus(null), 3000);
-    }, 2000);
-  };
-
-  // Visual Effects
-  const fireworkElements = Array(20)
-    .fill(0)
-    .map((_, i) => ({
-      id: i,
-      emoji: ["🎆", "🎇", "✨", "🎊", "🎉", "🎈", "💫", "🌟", "💥"][
-        Math.floor(Math.random() * 9)
-      ],
-      size: Math.random() * 40 + 20,
-      x: Math.random() * 100,
-      y: Math.random() * 100,
-      duration: Math.random() * 2 + 1,
-      delay: Math.random() * 2,
-    }));
-  const floatingEmojis = Array(15)
-    .fill(0)
-    .map((_, i) => ({
-      id: i,
-      emoji: ["🎉", "🏆", "👏", "💯", "✨", "🎊", "🌟", "💫"][
-        Math.floor(Math.random() * 8)
-      ],
-      size: Math.random() * 20 + 30,
-      x: Math.random() * 100,
-      y: 100 + Math.random() * 20,
-      duration: Math.random() * 10 + 10,
-      delay: Math.random() * 5,
-    }));
+  
   return (
     <div className="min-h-screen bg-gradient-to-br from-pink-500 to-teal-500 flex flex-col overflow-hidden relative border-8 border-gray-800">
       {/* Confetti & Fireworks */}
@@ -770,14 +594,8 @@ const Result = () => {
                     className="flex-1 p-3 border-2 border-gray-300 rounded-lg focus:border-pink-500 transition duration-150"
                   />
                   <AnimatedButton
-                    // onClick={handleSubmitEmail}
                     onClick={handleMergeAndSend}
                     variant="primary"
-                    // disabled={
-                    //   !isValidEmail(email) ||
-                    //   emailStatus === "sending" ||
-                    //   emailStatus === "sent"
-                    // }
                     disabled={
                       (processStatus !== "idle" &&
                         processStatus !== "error" &&
@@ -786,19 +604,6 @@ const Result = () => {
                     }
                     className="px-4 py-3 text-sm"
                   >
-                    {/* {emailStatus === "sending" ? (
-                      <span className="flex items-center">
-                        <FiSend className="mr-2 animate-pulse" /> Sending...
-                      </span>
-                    ) : emailStatus === "sent" ? (
-                      <span className="flex items-center text-white">
-                        <FiCheckCircle className="mr-2" /> Sent!
-                      </span>
-                    ) : (
-                      <span className="flex items-center">
-                        <FiSend className="mr-2" /> Send Report
-                      </span>
-                    )} */}
                     {processStatus === "idle" && (
                       <span className="flex items-center">
                         <FiSend className="mr-2" /> Send Report
@@ -831,17 +636,6 @@ const Result = () => {
                   </AnimatedButton>
                 </div>
                 <AnimatePresence>
-                  {/* {emailStatus === "sent" && (
-                    <motion.p
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: 10 }}
-                      className="text-sm text-teal-600 font-bold mt-2"
-                    >
-                      <FiCheckCircle className="inline mr-1" /> Report has been
-                      sent! Check your inbox.
-                    </motion.p>
-                  )} */}
                   {processStatus !== "idle" && (
                     <motion.div
                       initial={{ opacity: 0, height: 0 }}
