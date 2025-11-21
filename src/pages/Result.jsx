@@ -331,8 +331,22 @@ const Result = () => {
       const data = await ffmpeg.readFile("output.webm");
       const videoBlob = new Blob([data.buffer], { type: "video/webm" });
 
+      // --- NEW: GENERATE THUMBNAIL ---
+      // Take a screenshot at the 1-second mark (-ss 00:00:01)
+      await ffmpeg.exec([
+        "-i",
+        "output.webm",
+        "-ss",
+        "00:00:01",
+        "-frames:v",
+        "1",
+        "thumbnail.jpg",
+      ]);
+      const thumbData = await ffmpeg.readFile("thumbnail.jpg");
+      const thumbBlob = new Blob([thumbData.buffer], { type: "image/jpeg" });
       // Clean up FFmpeg memory
       await ffmpeg.deleteFile("output.webm");
+      await ffmpeg.deleteFile("thumbnail.jpg"); // Delete thumb
       await ffmpeg.deleteFile("list.txt");
       for (const name of fileNames) await ffmpeg.deleteFile(name);
 
@@ -352,6 +366,12 @@ const Result = () => {
       const downloadURL = await getDownloadURL(videoRef);
       console.log("File available at", downloadURL);
 
+      const thumbRef = ref(
+        storage,
+        `bolo_performances/${userName}_${uniqueId}.jpg`
+      );
+      await uploadBytes(thumbRef, thumbBlob);
+      const thumbURL = await getDownloadURL(thumbRef);
       // --- STEP C: SEND EMAIL ---
       setProcessStatus("sending_email");
       setStatusMessage("Dispatching email...");
@@ -365,7 +385,8 @@ const Result = () => {
         email,
         user_name: userName,
         name: userName,
-        video_link: downloadURL, // Pass the URL to the email template
+        video_link: downloadURL,
+        thumbnail_link: thumbURL,
         message: `Great job! You scored ${Math.round(
           recordedSigns.reduce((a, b) => a + b.score, 0) / recordedSigns.length
         )}% accuracy.`,
