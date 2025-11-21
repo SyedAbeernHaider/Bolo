@@ -1,8 +1,8 @@
 // firebase.js
 import { initializeApp } from "firebase/app";
 // *** FIX: Import getFirestore from the 'firebase/firestore' package ***
-import { getFirestore } from 'firebase/firestore'; 
-import { getAnalytics } from "firebase/analytics"; 
+import { getFirestore } from 'firebase/firestore';
+import { getStorage } from "firebase/storage";
 
 // Your web app's Firebase configuration
 const firebaseConfig = {
@@ -16,11 +16,13 @@ const firebaseConfig = {
   measurementId: "G-RWJSG484WV"
 };
 
+
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
 // const analytics = getAnalytics(app); // Analytics is optional, commented out if not used
 const db = getFirestore(app); // Now getFirestore is defined
+const storage = getStorage(app);
 const COLLECTION_NAME = 'sign_language_vectors';
 
 // Export the initialized Firestore instance and the collection name
-export { db, COLLECTION_NAME };
+export { db, COLLECTION_NAME, storage };

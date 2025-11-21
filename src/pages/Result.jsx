@@ -2,9 +2,6 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useEffect, useState, useRef, useCallback } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import {
-  FiArrowLeftCircle,
-  FiArrowRightCircle,
-  FiVolumeX,
   FiRefreshCcw,
   FiHome,
   FiShare2,
@@ -14,13 +11,19 @@ import {
   FiSkipForward,
   FiMail,
   FiSend,
-  FiUser,
   FiCheckCircle,
   FiDownload,
   FiLoader,
+  FiVolumeX,
+  FiUploadCloud,
 } from "react-icons/fi";
 import Confetti from "react-confetti";
 import { useWindowSize } from "react-use";
+import emailjs from "@emailjs/browser";
+
+// --- Firebase Imports ---
+import { storage } from "../firebase"; // Ensure path is correct
+import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 
 // --- FFmpeg Imports ---
 import { FFmpeg } from "@ffmpeg/ffmpeg";
@@ -153,6 +156,10 @@ const Result = () => {
   const [isPlaying, setIsPlaying] = useState(true);
 
   // FFmpeg States
+  // Processing States
+  // Status: 'idle' | 'merging' | 'uploading' | 'sending_email' | 'success' | 'error'
+  const [processStatus, setProcessStatus] = useState("idle");
+  const [statusMessage, setStatusMessage] = useState("");
   const [isMerging, setIsMerging] = useState(false);
   const [ffmpegLoaded, setFfmpegLoaded] = useState(false);
   const ffmpegRef = useRef(new FFmpeg());
@@ -160,22 +167,6 @@ const Result = () => {
   const currentSign =
     recordedSigns.length > 0 ? recordedSigns[currentReplayIndex] : null;
   const totalSignsMastered = recordedSigns.length;
-
-  // --- FFmpeg Logic ---
-  // const loadFfmpeg = async () => {
-  //   const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm";
-  //   const ffmpeg = ffmpegRef.current;
-
-  //   // Load ffmpeg blobs
-  //   await ffmpeg.load({
-  //     coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript"),
-  //     wasmURL: await toBlobURL(
-  //       `${baseURL}/ffmpeg-core.wasm`,
-  //       "application/wasm"
-  //     ),
-  //   });
-  //   setFfmpegLoaded(true);
-  // };
 
   const loadFfmpeg = async () => {
     const ffmpeg = ffmpegRef.current;
@@ -238,7 +229,7 @@ const Result = () => {
         // Fetch the data from the blob URL
         await ffmpeg.writeFile(fileName, await fetchFile(sign.videoUrl));
         fileNames.push(fileName);
-      } 
+      }
 
       // 2. Create a text file list for the concat demuxer
       // Format: file 'filename.webm'
@@ -296,6 +287,106 @@ const Result = () => {
   };
 
   // --- RESOURCE CLEANUP ---
+
+  const handleMergeAndSend = async () => {
+    if (!ffmpegLoaded) {
+      alert("Video engine loading...");
+      return;
+    }
+    if (!/\S+@\S+\.\S+/.test(email)) {
+      alert("Please enter a valid email.");
+      return;
+    }
+
+    setProcessStatus("merging");
+    setStatusMessage("Stitching video clips...");
+    const ffmpeg = ffmpegRef.current;
+
+    try {
+      // --- STEP A: MERGE VIDEOS ---
+      const fileNames = [];
+      for (let i = 0; i < recordedSigns.length; i++) {
+        const fileName = `input${i}.webm`;
+        await ffmpeg.writeFile(
+          fileName,
+          await fetchFile(recordedSigns[i].videoUrl)
+        );
+        fileNames.push(fileName);
+      }
+      const listContent = fileNames.map((name) => `file '${name}'`).join("\n");
+      await ffmpeg.writeFile("list.txt", listContent);
+
+      await ffmpeg.exec([
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        "list.txt",
+        "-c",
+        "copy",
+        "output.webm",
+      ]);
+
+      const data = await ffmpeg.readFile("output.webm");
+      const videoBlob = new Blob([data.buffer], { type: "video/webm" });
+
+      // Clean up FFmpeg memory
+      await ffmpeg.deleteFile("output.webm");
+      await ffmpeg.deleteFile("list.txt");
+      for (const name of fileNames) await ffmpeg.deleteFile(name);
+
+      // --- STEP B: UPLOAD TO FIREBASE ---
+      setProcessStatus("uploading");
+      setStatusMessage("Uploading to cloud...");
+
+      const uniqueId = `${Date.now()}_${Math.random()
+        .toString(36)
+        .substr(2, 9)}`;
+      const videoRef = ref(
+        storage,
+        `bolo_performances/${userName}_${uniqueId}.webm`
+      );
+
+      await uploadBytes(videoRef, videoBlob);
+      const downloadURL = await getDownloadURL(videoRef);
+      console.log("File available at", downloadURL);
+
+      // --- STEP C: SEND EMAIL ---
+      setProcessStatus("sending_email");
+      setStatusMessage("Dispatching email...");
+
+      // REPLACE THESE WITH YOUR EMAILJS CREDENTIALS
+      const SERVICE_ID = "service_hjcgutd";
+      const TEMPLATE_ID = "template_lthtia6";
+      const PUBLIC_KEY = "tUMWweeJ3LuLXsDJH";
+
+      const templateParams = {
+        email,
+        user_name: userName,
+        name: userName,
+        video_link: downloadURL, // Pass the URL to the email template
+        message: `Great job! You scored ${Math.round(
+          recordedSigns.reduce((a, b) => a + b.score, 0) / recordedSigns.length
+        )}% accuracy.`,
+      };
+
+      await emailjs.send(SERVICE_ID, TEMPLATE_ID, templateParams, PUBLIC_KEY);
+
+      setProcessStatus("success");
+      setStatusMessage("Sent Successfully!");
+
+      // Reset status after a delay
+      setTimeout(() => {
+        setProcessStatus("idle");
+        setStatusMessage("");
+      }, 5000);
+    } catch (error) {
+      console.error("Workflow Error:", error);
+      setProcessStatus("error");
+      setStatusMessage("Failed. Check console.");
+    }
+  };
   useEffect(() => {
     return () => {
       recordedSigns.forEach((sign) => {
@@ -307,8 +398,9 @@ const Result = () => {
   // --- AUTO-ADVANCE LOGIC ---
   const handleNextReplay = useCallback(() => {
     if (!isPlaying || totalSignsMastered === 0) return;
-    const nextIndex = (currentReplayIndex + 1) % totalSignsMastered;
-    setCurrentReplayIndex(nextIndex);
+    // const nextIndex = (currentReplayIndex + 1) % totalSignsMastered;
+    // setCurrentReplayIndex(nextIndex);
+    setCurrentReplayIndex((prev) => (prev + 1) % totalSignsMastered);
     if (videoRef.current) {
       setTimeout(() => {
         if (videoRef.current) {
@@ -320,22 +412,34 @@ const Result = () => {
 
   const handleTogglePlay = () => {
     setIsPlaying((prev) => !prev);
-    if (videoRef.current) {
-      if (isPlaying) videoRef.current.pause();
-      else videoRef.current.play().catch((e) => console.error(e));
-    }
+    // if (videoRef.current) {
+    //   if (isPlaying) videoRef.current.pause();
+    //   else videoRef.current.play().catch((e) => console.error(e));
+    // }
+    if (videoRef.current)
+      isPlaying ? videoRef.current.pause() : videoRef.current.play();
   };
 
+  // useEffect(() => {
+  //   if (totalSignsMastered > 0  && videoRef.current) {
+  //     const videoElement = videoRef.current;
+  //     if (videoElement) {
+  //       videoElement.onended = handleNextReplay;
+  //       if (isPlaying) videoElement.play().catch((e) => setIsPlaying(false));
+  //       return () => {
+  //         videoElement.onended = null;
+  //       };
+  //     }
+  //   }
+  // }, [totalSignsMastered, isPlaying, handleNextReplay, currentReplayIndex]);
+
   useEffect(() => {
-    if (totalSignsMastered > 0) {
-      const videoElement = videoRef.current;
-      if (videoElement) {
-        videoElement.onended = handleNextReplay;
-        if (isPlaying) videoElement.play().catch((e) => setIsPlaying(false));
-        return () => {
-          videoElement.onended = null;
-        };
-      }
+    if (totalSignsMastered > 0 && videoRef.current) {
+      videoRef.current.onended = handleNextReplay;
+      if (isPlaying) videoRef.current.play().catch(() => setIsPlaying(false));
+      return () => {
+        if (videoRef.current) videoRef.current.onended = null;
+      };
     }
   }, [totalSignsMastered, isPlaying, handleNextReplay, currentReplayIndex]);
 
@@ -631,25 +735,37 @@ const Result = () => {
                 <div className="flex gap-2">
                   <input
                     type="email"
-                    placeholder="Your Email Address"
+                    placeholder="Enter your email address"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
+                    // disabled={
+                    //   emailStatus === "sending" || emailStatus === "sent"
+                    // }
                     disabled={
-                      emailStatus === "sending" || emailStatus === "sent"
+                      processStatus !== "idle" &&
+                      processStatus !== "error" &&
+                      processStatus !== "success"
                     }
                     className="flex-1 p-3 border-2 border-gray-300 rounded-lg focus:border-pink-500 transition duration-150"
                   />
                   <AnimatedButton
-                    onClick={handleSubmitEmail}
+                    // onClick={handleSubmitEmail}
+                    onClick={handleMergeAndSend}
                     variant="primary"
+                    // disabled={
+                    //   !isValidEmail(email) ||
+                    //   emailStatus === "sending" ||
+                    //   emailStatus === "sent"
+                    // }
                     disabled={
-                      !isValidEmail(email) ||
-                      emailStatus === "sending" ||
-                      emailStatus === "sent"
+                      (processStatus !== "idle" &&
+                        processStatus !== "error" &&
+                        processStatus !== "success") ||
+                      totalSignsMastered === 0
                     }
                     className="px-4 py-3 text-sm"
                   >
-                    {emailStatus === "sending" ? (
+                    {/* {emailStatus === "sending" ? (
                       <span className="flex items-center">
                         <FiSend className="mr-2 animate-pulse" /> Sending...
                       </span>
@@ -661,11 +777,40 @@ const Result = () => {
                       <span className="flex items-center">
                         <FiSend className="mr-2" /> Send Report
                       </span>
+                    )} */}
+                    {processStatus === "idle" && (
+                      <span className="flex items-center">
+                        <FiSend className="mr-2" /> Send Report
+                      </span>
+                    )}
+                    {processStatus === "merging" && (
+                      <span className="flex items-center">
+                        <FiLoader className="mr-2 animate-spin" /> Merging...
+                      </span>
+                    )}
+                    {processStatus === "uploading" && (
+                      <span className="flex items-center">
+                        <FiUploadCloud className="mr-2 animate-pulse" />{" "}
+                        Uploading...
+                      </span>
+                    )}
+                    {processStatus === "sending_email" && (
+                      <span className="flex items-center">
+                        <FiMail className="mr-2 animate-bounce" /> Emailing...
+                      </span>
+                    )}
+                    {processStatus === "success" && (
+                      <span className="flex items-center">
+                        <FiCheckCircle className="mr-2" /> Sent!
+                      </span>
+                    )}
+                    {processStatus === "error" && (
+                      <span className="flex items-center">Retry?</span>
                     )}
                   </AnimatedButton>
                 </div>
                 <AnimatePresence>
-                  {emailStatus === "sent" && (
+                  {/* {emailStatus === "sent" && (
                     <motion.p
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
@@ -675,6 +820,20 @@ const Result = () => {
                       <FiCheckCircle className="inline mr-1" /> Report has been
                       sent! Check your inbox.
                     </motion.p>
+                  )} */}
+                  {processStatus !== "idle" && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: "auto" }}
+                      exit={{ opacity: 0, height: 0 }}
+                      className={`mt-2 font-bold text-sm ${
+                        processStatus === "error"
+                          ? "text-red-600"
+                          : "text-teal-600"
+                      }`}
+                    >
+                      {statusMessage}
+                    </motion.div>
                   )}
                 </AnimatePresence>
               </div>
