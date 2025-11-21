@@ -22,9 +22,25 @@ const VECTOR_LENGTH = TARGET_FRAME_COUNT * 21 * 3; // = 441
 const ZERO_KEYPOINT = { x: 0, y: 0, z: 0 };
 
 
+// --- NEW DYNAMIC SIGN CONSTANTS FOR EARLY EXIT ---
+// Signs that involve a clear, fast movement (J, Z) or signs that are often completed quickly (M, S, T)
+const DYNAMIC_SIGNS = ['J', 'M', 'S', 'T', 'Z']; 
+const STATIC_CHECK_FRAMES = 3; // Number of *sampled* frames to check for "stuck"
+const STUCK_MOVEMENT_THRESHOLD = 0.005; // Max movement distance (0-1 scale) of the wrist over STATIC_CHECK_FRAMES to be considered "stuck"
+
 // --- DETECTION THRESHOLDS (Using Cosine Similarity) ---
 const SIMILARITY_THRESHOLD = 0.70; // Cosine Similarity threshold (0.70 = 70%)
 const MAX_ATTEMPT_TIME = 7000; // Time to attempt the sign (can remain 7s even if the sequence is 3s)
+
+// --- HELPER FUNCTION: Calculates 3D distance between two keypoints (Used for movement check) ---
+const getDistance = (kp1, kp2) => {
+    if (!kp1 || !kp2) return 0;
+    return Math.sqrt(
+        Math.pow(kp1.x - kp2.x, 2) + 
+        Math.pow(kp1.y - kp2.y, 2) + 
+        Math.pow(kp1.z - kp2.z, 2)
+    );
+};
 
 // --- HELPER FUNCTION: Normalizes keypoints for scale and position invariance (Copied from Dataset.jsx) ---
 const normalizeKeypoints = (keypoints) => {
@@ -54,12 +70,12 @@ const flattenKeypoints = (normalizedFrames) => {
 const processSequenceToVector = (rawFrames) => {
     let framesToProcess = [...rawFrames]; // Copy the buffer
     
-    // 1. Truncate if needed
+    // 1. Truncate if needed (Should only happen if we collect > TARGET_FRAME_COUNT)
     if (framesToProcess.length > TARGET_FRAME_COUNT) {
         framesToProcess = framesToProcess.slice(0, TARGET_FRAME_COUNT);
     }
     
-    // 2. Pad with 21 zero-keypoint frames if frames are missing (low FPS)
+    // 2. Pad with 21 zero-keypoint frames if frames are missing (low FPS or early exit)
     const missingFramesCount = TARGET_FRAME_COUNT - framesToProcess.length;
     if (missingFramesCount > 0) {
         const zeroKeypointFrame = new Array(21).fill(ZERO_KEYPOINT);
@@ -283,34 +299,36 @@ const WiggleStar = ({ size, position }) => (
     </motion.div>
 );
 
+// --- START: UPDATED signVideos object with corrected path ---
 const signVideos = {
-    'A': 'https://v.ftcdn.net/02/56/49/00/700_F_256490033_wEjUPH9ngCatJZTRidpla1ML9SqEPoTB_ST.mp4',
-    'B': 'https://v.ftcdn.net/02/56/49/09/700_F_256490938_gokVW30m5WmOOm9fYW0VPnzqvkADZ5k6_ST.mp4',
-    'C': 'https://v.ftcdn.net/03/72/12/98/700_F_372129825_ogi8JWJAQZFGmecp7CPNnjOJRNh1sZQW_ST.mp4',
-    'D': 'https://v.ftcdn.net/02/56/49/28/700_F_256492865_E6wfj8gSc1hNBh3VmkvM1a34ldAF3bC7_ST.mp4',
-    'E': 'https://v.ftcdn.net/02/56/49/38/700_F_256493860_vZrSvpLC71Z3seHmIu9T9Y9ItlRgQcKB_ST.mp4',
-    'F': 'https://v.ftcdn.net/02/56/49/46/700_F_256494637_8VWziV7A3QH1IB52YKuaOQj0MS2K0gHz_ST.mp4',
-    'G': 'https://v.ftcdn.net/04/51/33/31/700_F_451333158_X3es3ekr2rOJ0gkEkAS8ClRMooAJQEZ4_ST.mp4',
-    'H': 'https://v.ftcdn.net/02/56/49/61/700_F_256496110_3SuAe0VSHHTvXNIY6MilGoNyOW9Upojj_ST.mp4',
-    'I': 'https://v.ftcdn.net/10/22/81/91/700_F_1022819113_2qPxCtY39jMRkTOIOm0lKAbDCKtLj47C_ST.mp4',
-    'J': 'https://v.ftcdn.net/02/56/49/76/700_F_256497609_HfniMe27SEDmMQRVzXGYyCroUzIAxRL5_ST.mp4',
-    'K': 'https://v.ftcdn.net/04/51/75/13/700_F_451751352_LbZyKjMRFVHenWSp8XvRr8C87hJPxt9m_ST.mp4',
-    'L': 'https://v.ftcdn.net/04/51/33/31/700_F_451333156_VkW6U39AYbY39wbYwbsDJT0GR4HG6cPv_ST.mp4',
-    'M': 'https://v.ftcdn.net/02/56/50/01/700_F_256500182_ghedqfv1DXwIsH0TlJtlpQHyOzHxmRaJ_ST.mp4',
-    'N': 'https://v.ftcdn.net/04/51/33/31/700_F_451333159_p8rq5IqKuKcwxUFj6PeiREAT8wemaXSz_ST.mp4',
-    'O': 'https://v.ftcdn.net/04/51/72/73/700_F_451727343_5ciMyeGJHWsB3dtomkBuhM1hTfNDtm6A_ST.mp4',
-    'P': 'https://v.ftcdn.net/04/51/75/13/700_F_451751352_LbZyKjMRFVHenWSp8XvRr8C87hJPxt9m_ST.mp4',
-    'Q': 'https://v.ftcdn.net/02/56/50/51/700_F_256505141_QgNcPntv88FNTSXDJEBtnvVMDpLGmWt3_ST.mp4',
-    'R': 'https://v.ftcdn.net/03/26/51/11/700_F_326511157_YVVObGmUQZ2zUk3s4Sz0lrXoQJDeoqZC_ST.mp4',
-    'S': 'https://v.ftcdn.net/02/56/50/75/700_F_256507583_dQRAmGF93QofGJjx0SDCHX5rY8P1Rutv_ST.mp4',
-    'T': 'https://v.ftcdn.net/02/56/50/87/700_F_256508727_s7IeWZPSNyTZe7EznZhEjjjbbaPQPqt7_ST.mp4',
-    'U': 'https://v.ftcdn.net/02/56/50/98/700_F_256509838_W6SXnyXgm3gKEyIER8UOwiNlUqoypYDC_ST.mp4',
-    'V': 'https://v.ftcdn.net/02/56/51/11/700_F_256511113_mDvHFkxAdjN8QmD6CEIV01rDuAoC5Noi_ST.mp4',
-    'W': 'https://v.ftcdn.net/02/56/51/25/700_F_256512526_VB7rl3srYkEQHh8xVvHGy7dLvvMb7pPT_ST.mp4',
-    'X': 'https://v.ftcdn.net/04/51/72/76/700_F_451727694_uPg2poUMu8q0gQo21CiEPKyvsp1VQPoP_ST.mp4',
-    'Y': 'https://v.ftcdn.net/03/72/12/97/700_F_372129723_UZuWwfDdj51lrodvl6yfKwt4lamYRrPm_ST.mp4',
-    'Z': 'https://v.ftcdn.net/02/56/51/55/700_F_256515526_lQsX2PtDlBnZnCxFiILwpeJq1ecTrrkT_ST.mp4',
+    'A': '/psl_alphabets/A.mp4',
+    'B': '/psl_alphabets/B.mp4',
+    'C': '/psl_alphabets/C.mp4',
+    'D': '/psl_alphabets/D.mp4',
+    'E': '/psl_alphabets/E.mp4',
+    'F': '/psl_alphabets/F.mp4',
+    'G': '/psl_alphabets/G.mp4',
+    'H': '/psl_alphabets/H.mp4',
+    'I': '/psl_alphabets/I.mp4',
+    'J': '/psl_alphabets/J.mp4',
+    'K': '/psl_alphabets/K.mp4',
+    'L': '/psl_alphabets/L.mp4',
+    'M': '/psl_alphabets/M.mp4',
+    'N': '/psl_alphabets/N.mp4',
+    'O': '/psl_alphabets/O.mp4',
+    'P': '/psl_alphabets/P.mp4',
+    'Q': '/psl_alphabets/Q.mp4',
+    'R': '/psl_alphabets/R.mp4',
+    'S': '/psl_alphabets/S.mp4',
+    'T': '/psl_alphabets/T.mp4',
+    'U': '/psl_alphabets/U.mp4',
+    'V': '/psl_alphabets/V.mp4',
+    'W': '/psl_alphabets/W.mp4',
+    'X': '/psl_alphabets/X.mp4',
+    'Y': '/psl_alphabets/Y.mp4',
+    'Z': '/psl_alphabets/Z.mp4',
 };
+// --- END: UPDATED signVideos object with corrected path ---
 // --- End Helper Components ---
 
 
@@ -345,6 +363,9 @@ const Detection = () => {
     // --- Sequence Matching Refs ---
     const sequenceBufferRef = useRef([]); // Stores sampled raw keypoints
     const isProcessingSequenceRef = useRef(false); // Flag to prevent multiple sequence processing
+    // --- NEW REF FOR MOVEMENT TRACKING ---
+    const movementKeypointsRef = useRef([]); // Stores the wrist keypoint for the last STATIC_CHECK_FRAMES
+
     
     const mediaRecorderRef = useRef(null);
     const recordedChunksRef = useRef([]);
@@ -446,9 +467,8 @@ const Detection = () => {
     }, [isDetecting, countdown, result, currentLetter, currentScore, baseLabel]);
 
 
-    // 1. Countdown Effect (MAX_ATTEMPT_TIME logic removed, only countdown remains)
+    // 1. Countdown Effect 
     useEffect(() => {
-        // Clear any lingering timer from previous runs just in case (though it shouldn't fire now)
         if (failTimerRef.current) {
             clearTimeout(failTimerRef.current);
             failTimerRef.current = null;
@@ -468,7 +488,6 @@ const Detection = () => {
 
         return () => {
             clearInterval(timer);
-            // failTimerRef logic removed here
         };
     }, [isDetecting, countdown]);
 
@@ -476,31 +495,92 @@ const Detection = () => {
     // 2. --- CORE SEQUENCE SAMPLING & SINGLE MATCH LOGIC EFFECT ---
     useEffect(() => {
         if (isModelLoading || isWebcamError || isVectorStoreLoading || !isDetecting || countdown > 0 || !handType) {
+            // Reset movement tracking if detection is off
+            if (!isDetecting) movementKeypointsRef.current = [];
             return;
         }
 
+        // Helper function for movement check (local definition for scope)
+        const checkStuckMovement = (newKeypoints) => {
+            if (newKeypoints.length !== 21) return false;
+
+            const wrist = newKeypoints[0];
+            movementKeypointsRef.current.push(wrist);
+
+            // Keep only the last STATIC_CHECK_FRAMES
+            if (movementKeypointsRef.current.length > STATIC_CHECK_FRAMES) {
+                movementKeypointsRef.current.shift();
+            }
+
+            if (movementKeypointsRef.current.length < STATIC_CHECK_FRAMES) {
+                return false;
+            }
+
+            // Check movement between the first and last wrist position in the buffer
+            const firstWrist = movementKeypointsRef.current[0];
+            const lastWrist = movementKeypointsRef.current[STATIC_CHECK_FRAMES - 1];
+            const distance = getDistance(firstWrist, lastWrist);
+
+            return distance < STUCK_MOVEMENT_THRESHOLD;
+        };
+
+
         // Sampling Logic: Only sample every 10th frame
-        if (incomingFrameCounter % SAMPLE_RATE === 0) { // <--- CORE SAMPLING CHECK uses SAMPLE_RATE = 10
+        if (incomingFrameCounter % SAMPLE_RATE === 0) { 
             
             // Determine keypoints for the frame (21 points or 21 zero placeholders)
             const keypointsForFrame = liveKeypoints.length === 21 
                                     ? liveKeypoints 
                                     : new Array(21).fill(ZERO_KEYPOINT);
             
-            // Only push to buffer if we haven't reached the target count
-            if (sequenceBufferRef.current.length < TARGET_FRAME_COUNT) { // TARGET_FRAME_COUNT = 7
+            const isHandDetected = liveKeypoints.length === 21;
+            const isDynamicSign = DYNAMIC_SIGNS.includes(currentLetter);
+
+            let triggerEarlyMatch = false;
+
+            // --- NEW EARLY MATCH LOGIC FOR DYNAMIC SIGNS ---
+            if (isDynamicSign && isHandDetected && sequenceBufferRef.current.length > 0) {
+                // If hand is detected AND we have collected at least one frame:
+                // Check if the hand is now "stuck" (movement completed and now holding steady)
+                if (checkStuckMovement(liveKeypoints)) {
+                    // console.log(`[Detection] Dynamic sign ${currentLetter} stuck! Triggering early match.`);
+                    triggerEarlyMatch = true;
+                }
+            }
+            
+            // Only push to buffer if we haven't reached the target count AND we're not triggering an early match
+            if (sequenceBufferRef.current.length < TARGET_FRAME_COUNT && !triggerEarlyMatch) { 
                  sequenceBufferRef.current.push(keypointsForFrame);
             }
 
-            // Sequence Complete: Process and Match
-            if (sequenceBufferRef.current.length >= TARGET_FRAME_COUNT && !isProcessingSequenceRef.current) {
+            if (isProcessingSequenceRef.current) return;
+            
+            const isSequenceComplete = sequenceBufferRef.current.length >= TARGET_FRAME_COUNT;
+
+            // Trigger Match if sequence is complete OR an early match is triggered
+            if (isSequenceComplete || triggerEarlyMatch) { // <--- MODIFIED TRIGGER CONDITION
+                
+                // Only proceed if there are actual detected frames (for dynamic signs)
+                const hasActualData = sequenceBufferRef.current.some(frame => 
+                    frame.some(kp => kp.x !== 0 || kp.y !== 0 || kp.z !== 0)
+                );
+
+                if (!hasActualData) {
+                    // Sequence consists of only zero keypoints (hand not detected)
+                    sequenceBufferRef.current = [];
+                    movementKeypointsRef.current = [];
+                    isProcessingSequenceRef.current = false;
+                    return;
+                }
+
                 isProcessingSequenceRef.current = true;
                 
-                // 1. Process the sampled frames into the final fixed-length vector (Length 441)
+                // 1. Process the sampled frames into the final fixed-length vector (Handles padding for early exit)
                 const queryVector = processSequenceToVector(sequenceBufferRef.current);
                 
-                // 2. Reset the buffer and flag for the next sequence attempt (THIS IS THE ONLY RESET POINT)
+                // 2. Reset the buffer and flag for the next sequence attempt
                 sequenceBufferRef.current = [];
+                movementKeypointsRef.current = []; // Reset movement tracker
                 isProcessingSequenceRef.current = false;
                 
                 let isSuccessfulMatch = false;
@@ -527,7 +607,7 @@ const Detection = () => {
                             isSuccessTransitionRef.current = true;
                             setIsDetecting(false); 
                             setResult(true); 
-                            setFailureMessage(null); // Clear any previous failure message
+                            setFailureMessage(null); 
                             
                             const clearSuccessFlagTimer = setTimeout(() => {
                                 isSuccessTransitionRef.current = false;
@@ -536,26 +616,23 @@ const Detection = () => {
                             return () => clearTimeout(clearSuccessFlagTimer);
                         } else if (isTargetHand && similarityScore >= SIMILARITY_THRESHOLD) {
                             // FAILURE: Strong match (>= 70%) to the WRONG letter 
-                            console.log(`[Detection] Strong match to WRONG sign: ${bestMatch.label} (${scorePercent}%)`);
-                            setFailureMessage(`WRONG_SIGN:${matchedLetter}`); // <-- SET FAILURE REASON
-                            setCurrentScore(scorePercent); // Keep the score for display
+                            setFailureMessage(`WRONG_SIGN:${matchedLetter}`); 
+                            setCurrentScore(scorePercent);
                         } else {
-                            // FAILURE: Not a strong match (low score or correct sign but low consistency)
-                            console.log(`[Detection] Best match: ${bestMatch.label} (${scorePercent}%) - No match found.`);
-                            setFailureMessage('NO_MATCH'); // <-- NEW FAILURE REASON
-                            setCurrentScore(scorePercent); // Keep the score for display
+                            // FAILURE: Not a strong match
+                            setFailureMessage('NO_MATCH'); 
+                            setCurrentScore(scorePercent);
                         }
                     } else {
                         setCurrentScore(0);
                         setFailureMessage('NO_MATCH');
-                        console.log("[Detection] No match found or VectorStore empty.");
                     }
                 } else {
                      setCurrentScore(0);
                      setFailureMessage('NO_MATCH');
                 }
                 
-                // NEW LOGIC: If a successful match was NOT achieved, stop detecting immediately.
+                // If a successful match was NOT achieved, stop detecting immediately.
                 if (!isSuccessfulMatch) {
                     setIsDetecting(false); 
                     setResult(false);
@@ -608,6 +685,7 @@ const Detection = () => {
         
         // Reset sequence state
         sequenceBufferRef.current = [];
+        movementKeypointsRef.current = []; // Reset movement tracker on restart
         isProcessingSequenceRef.current = false;
 
         setIsDetecting(true); 
@@ -629,7 +707,14 @@ const Detection = () => {
             if (targetVariantsCount === 0) {
                 return `ERROR: Data for ${baseLabel} ${currentLetter} NOT FOUND!`;
             }
-            return `SIGN ${currentLetter} NOW! ANALYZING SEQUENCE...`;
+            const framesCollected = sequenceBufferRef.current.length;
+            
+            // Enhanced message to show progress/early exit info
+            if (DYNAMIC_SIGNS.includes(currentLetter)) {
+                 return `SIGN ${currentLetter} NOW! ANALYZING SEQUENCE (${framesCollected} of ${TARGET_FRAME_COUNT})!`;
+            }
+
+            return `SIGN ${currentLetter} NOW! ANALYZING SEQUENCE... ${framesCollected}/${TARGET_FRAME_COUNT}`;
         } else if (result === true) {
             if (currentLetterIndex === processedNameLetters.length - 1) {
                 return <><FiCheckCircle className='mr-2' /> DONE! See Final Results</>;
@@ -641,7 +726,7 @@ const Detection = () => {
                 const wrongLetter = failureMessage.split(':')[1];
                 return <><FiXCircle className='mr-2' /> WRONG SIGN! You signed {wrongLetter}. Try Again.</>;
             }
-             // Covers NO_MATCH and old TIMEOUT (which is now just NO_MATCH after first sequence)
+             // Covers NO_MATCH 
             return <><FiRefreshCcw className='mr-2' /> No Match Found! Try Again.</>;
         } 
         return <><FiZap className='mr-2' /> Start BOLO Sequence Check</>;
@@ -719,6 +804,9 @@ const Detection = () => {
                                 <ul className="text-base text-gray-700 list-disc pl-5 mt-1">
                                     <li>Keep your wrist firm!</li>
                                     <li>Match the sequence consistently over the capture time!</li>
+                                    {DYNAMIC_SIGNS.includes(currentLetter) && (
+                                        <li className="font-bold text-pink-500">DYNAMIC SIGN: Sign fast, hold when complete for quick match!</li>
+                                    )}
                                     <li>Target: <span className="font-bold text-pink-500">{baseLabel} {currentLetter} (Matching against {targetVariantsCount} variants)</span></li>
                                 </ul>
                             </div>
@@ -826,7 +914,6 @@ const Detection = () => {
                                 )}
                             </AnimatePresence>
 
-                            {/* Real-time score and hint display - THIS BLOCK HAS BEEN REMOVED */}
                             
                         </div>
                         
