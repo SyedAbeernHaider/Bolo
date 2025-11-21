@@ -3,7 +3,9 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { FiArrowRight, FiVolumeX } from 'react-icons/fi';
 
-// --- Helper Components for Animation ---
+// =================================================================
+// 🎨 HELPER UI COMPONENTS
+// =================================================================
 
 const Navbar = () => (
   <nav className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-start items-center z-20 relative">
@@ -98,7 +100,9 @@ const BouncingCharacter = () => (
     </motion.div>
 );
 
-// --- Main NameInput Component ---
+// =================================================================
+// 🧠 MAIN COMPONENT: NameInput
+// =================================================================
 
 const NameInput = () => {
   const navigate = useNavigate();
@@ -106,6 +110,7 @@ const NameInput = () => {
   const [isFocused, setIsFocused] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [shake, setShake] = useState(false);
+  const [validationError, setValidationError] = useState(''); // New state for validation message
 
   // Generate random positions for floating emojis once
   const floatingEmojis = Array(15).fill(0).map((_, i) => ({
@@ -118,25 +123,44 @@ const NameInput = () => {
     delay: Math.random() * 5
   }));
 
-    const handleSubmit = (e) => {
+  /**
+   * Input Change Handler: Enforces A-Z only.
+   * This prevents users from even typing invalid characters (spaces, numbers, symbols).
+   */
+  const handleNameChange = (e) => {
+    const rawValue = e.target.value;
+    
+    // REGEX FIX: Keep only characters that are A-Z (case insensitive).
+    // The [^A-Za-z] matches anything *not* a letter. We replace it with an empty string.
+    const filteredValue = rawValue.replace(/[^A-Za-z]/g, ''); 
+    
+    setName(filteredValue);
+
+    // Reset error states on change
+    if (shake) setShake(false);
+    if (validationError) setValidationError('');
+  };
+
+  /**
+   * Form Submission Handler: Final validation and navigation.
+   */
+  const handleSubmit = (e) => {
     e.preventDefault();
+    
+    // 1. Check for empty input (already filtered for non-A-Z)
     if (!name.trim()) {
+      setValidationError("Whoops! We need a name to start.");
       setShake(true);
       setTimeout(() => setShake(false), 500);
       return;
     }
 
-    // FIX: Use all A-Z for validation since signVideos supports the full alphabet.
-    const availableLetters = Array.from({ length: 26 }, (_, i) => String.fromCharCode('A'.charCodeAt(0) + i));
+    // 2. Validate that the name still contains characters after filtering
+    const validNameLetters = name.toUpperCase().split('');
     
-    // Convert name to uppercase and filter only available letters
-    const validNameLetters = name
-      .toUpperCase()
-      .split('')
-      .filter(letter => availableLetters.includes(letter));
-
+    // Since the onChange handler already filtered non-A-Z, we just check length.
     if (validNameLetters.length === 0) {
-      alert("Please enter a name containing at least one ASL letter (A-Z) we can check!");
+      setValidationError("Please enter a name containing only letters (A-Z).");
       setShake(true);
       setTimeout(() => setShake(false), 600);
       return;
@@ -144,9 +168,11 @@ const NameInput = () => {
 
     setIsSubmitting(true);
 
+    console.log(`Starting BOLO challenge for: ${name}. Letters to sign: ${validNameLetters.join(', ')}`);
+
     // Add a delay for better UX
     setTimeout(() => {
-      // Navigate to detection page with validated name letters (e.g., ['X', 'Y', 'Z'])
+      // Navigate to detection page with validated name letters
       navigate('/detection', {
         state: {
           userName: name,
@@ -159,7 +185,7 @@ const NameInput = () => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-pink-500 to-teal-500 flex flex-col overflow-hidden relative border-8 border-gray-800">
       
-      {/* Floating Emojis (Continuous GIF background) */}
+      {/* Floating Emojis */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
         {floatingEmojis.map(props => <FloatingEmoji {...props} />)}
       </div>
@@ -168,7 +194,6 @@ const NameInput = () => {
       <WiggleStar size="5xl" position="top-20 right-1/4" />
       <WiggleStar size="4xl" position="bottom-10 left-10" />
 
-      {/* Navigation (Simplified) */}
       <Navbar />
       
       <div className="flex-1 flex items-center justify-center p-6 relative z-10">
@@ -178,7 +203,7 @@ const NameInput = () => {
             scale: 1, 
             opacity: 1, 
             y: 0,
-            rotate: shake ? [0, -5, 5, -5, 5, 0] : [0, 0.5, -0.5, 0.5, 0], // Subtle continuous wobble
+            rotate: shake ? [0, -5, 5, -5, 5, 0] : [0, 0.5, -0.5, 0.5, 0], 
             x: shake ? [0, -10, 10, -10, 10, 0] : 0 
           }}
           transition={{ 
@@ -214,16 +239,13 @@ const NameInput = () => {
               <motion.input
                 type="text"
                 value={name}
-                onChange={(e) => {
-                  setName(e.target.value);
-                  if (shake) setShake(false);
-                }}
+                onChange={handleNameChange} // Use the new filtering handler
                 onFocus={() => setIsFocused(true)}
                 onBlur={() => setIsFocused(false)}
                 className={`w-full px-6 py-4 text-xl font-bold rounded-xl border-4 border-gray-800 transition-all duration-200 focus:ring-4 focus:ring-teal-300 focus:outline-none focus:bg-yellow-50 ${
                   isFocused ? 'shadow-xl' : 'shadow-[4px_4px_0px_#1f2937] hover:shadow-[6px_6px_0px_#1f2937]'
                 } ${shake ? 'border-red-500 bg-red-50' : 'bg-white'}`}
-                placeholder="Type your sign name here..."
+                placeholder="Type your name (Letters A-Z only)..." // Updated placeholder for clarity
                 disabled={isSubmitting}
                 required
               />
@@ -249,7 +271,7 @@ const NameInput = () => {
                     >
                         <motion.span 
                             animate={{ y: [0, -5, 0], rotate: [0, 10, -10, 0] }}
-                            transition={{ duration: 1, repeat: Infinity }}
+                            transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
                         >
                             ✍️
                         </motion.span>
@@ -257,13 +279,14 @@ const NameInput = () => {
                 )}
               </AnimatePresence>
 
-              {shake && (
+              {validationError && (
                 <motion.p 
                   className="text-red-600 text-sm mt-3 flex items-center font-bold"
+                  key="error-message"
                   initial={{ opacity: 0, y: -10 }}
                   animate={{ opacity: 1, y: 0 }}
                 >
-                  <span className="mr-1">⚠️</span> Whoops! We need a name to start.
+                  <span className="mr-1">⚠️</span> {validationError}
                 </motion.p>
               )}
             </motion.div>

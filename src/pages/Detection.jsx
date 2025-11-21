@@ -4,25 +4,32 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { FiArrowRight, FiZap, FiVolumeX, FiRefreshCcw, FiCheckCircle, FiXCircle, FiVideoOff } from 'react-icons/fi';
 
 // --- MediaPipe Imports ---
-import { Hands, POSE_LANDMARKS } from '@mediapipe/hands';
+import { Hands } from '@mediapipe/hands';
 import { Camera } from '@mediapipe/camera_utils';
 import { drawConnectors, drawLandmarks } from '@mediapipe/drawing_utils';
 
-// --- LOCAL DATASET IMPORT ---
-import LOCAL_DATASET from '../dataset.json' ; 
+// --- VectorStore Import ---
+import { SignVectorStore } from './VectorStore'; 
 
-// --- MediaPipe Constants (Must match Dataset.jsx for consistency) ---
+// --- MediaPipe Constants (Must match Dataset.jsx for fixed vector length) ---
 const VIDEO_WIDTH = 640; 
 const VIDEO_HEIGHT = 480;
 
-const DISTANCE_THRESHOLD = 0.12; 
-const MAX_ATTEMPT_TIME = 7000; 
-const MAX_SCORING_DISTANCE = 0.35; 
+// Sequence Constants (UPDATED to match new Dataset.jsx logic)
+const TARGET_FRAME_COUNT = 7; // Fixed length of the sequence
+const SAMPLE_RATE = 10; // <--- ONLY EVERY 10TH FRAME IS USED (Base rate for sampling check)
+const VECTOR_LENGTH = TARGET_FRAME_COUNT * 21 * 3; // = 441
+const ZERO_KEYPOINT = { x: 0, y: 0, z: 0 };
 
-// --- HELPER FUNCTION: Normalizes keypoints for scale and position invariance ---
+
+// --- DETECTION THRESHOLDS (Using Cosine Similarity) ---
+const SIMILARITY_THRESHOLD = 0.70; // Cosine Similarity threshold (0.70 = 70%)
+const MAX_ATTEMPT_TIME = 7000; // Time to attempt the sign (can remain 7s even if the sequence is 3s)
+
+// --- HELPER FUNCTION: Normalizes keypoints for scale and position invariance (Copied from Dataset.jsx) ---
 const normalizeKeypoints = (keypoints) => {
     if (keypoints.length !== 21) {
-        return [];
+        return null;
     }
     const wrist = keypoints[0];
     return keypoints.map(kp => ({
@@ -32,82 +39,69 @@ const normalizeKeypoints = (keypoints) => {
     }));
 };
 
-// --- HELPER FUNCTION: Calculates the Euclidean Distance and returns the score component ---
-const calculateDistanceAndScore = (liveKeypoints, targetKeypoints) => {
-    if (liveKeypoints.length !== 21 || targetKeypoints.length !== 21) {
-        return { distance: Infinity, score: 0, rawWristPosition: {x: 0.5, y: 0.5, z: 0} };
-    }
-    
-    // 1. Normalize the live keypoints
-    const normalizedLive = normalizeKeypoints(liveKeypoints);
-    const normalizedTarget = targetKeypoints; 
-
-    if (normalizedLive.length !== 21 || normalizedTarget.length !== 21) {
-        return { distance: Infinity, score: 0, rawWristPosition: liveKeypoints[0] };
-    }
-
-    let sumOfSquaredDifferences = 0;
-    
-    for (let i = 0; i < 21; i++) { 
-        const dx = normalizedLive[i].x - normalizedTarget[i].x;
-        const dy = normalizedLive[i].y - normalizedTarget[i].y;
-        const dz = normalizedLive[i].z - normalizedTarget[i].z;
-        
-        sumOfSquaredDifferences += (dx * dx) + (dy * dy) + (dz * dz);
-    }
-
-    const distance = Math.sqrt(sumOfSquaredDifferences);
-    const clampedDistance = Math.min(distance, MAX_SCORING_DISTANCE);
-    const score = Math.max(0, 100 - (clampedDistance / MAX_SCORING_DISTANCE) * 100);
-
-    return { 
-        distance, 
-        score: Math.round(score),
-        rawWristPosition: liveKeypoints[0]
-    };
+// --- HELPER FUNCTION: Flattens a 3D keypoint structure into a 1D vector (Copied from Dataset.jsx) ---
+const flattenKeypoints = (normalizedFrames) => {
+    const vector = [];
+    normalizedFrames.forEach(frame => {
+        frame.forEach(kp => {           
+            vector.push(kp.x, kp.y, kp.z); 
+        });
+    });
+    return vector; 
 };
 
-// --- HINT LOGIC: Generates feedback for the user ---
-const getPositionalHint = (rawWristPosition) => {
-    const center = { x: 0.5, y: 0.5 }; 
-    const threshold = 0.2; 
-    let xHint = '';
-    let yHint = '';
-
-    if (rawWristPosition.x < center.x - threshold) {
-        xHint = 'Move Hand RIGHT';
-    } else if (rawWristPosition.x > center.x + threshold) {
-        xHint = 'Move Hand LEFT';
-    }
-
-    if (rawWristPosition.y < center.y - threshold) {
-        yHint = 'Move Hand DOWN';
-    } else if (rawWristPosition.y > center.y + threshold) {
-        yHint = 'Move Hand UP';
+// --- CORE FUNCTION: Process collected frames into the fixed-length vector ---
+const processSequenceToVector = (rawFrames) => {
+    let framesToProcess = [...rawFrames]; // Copy the buffer
+    
+    // 1. Truncate if needed
+    if (framesToProcess.length > TARGET_FRAME_COUNT) {
+        framesToProcess = framesToProcess.slice(0, TARGET_FRAME_COUNT);
     }
     
-    if (rawWristPosition.z < -0.2) { 
-         return 'Move Hand CLOSER';
-    } else if (rawWristPosition.z > 0.2) {
-         return 'Move Hand FARTHER';
+    // 2. Pad with 21 zero-keypoint frames if frames are missing (low FPS)
+    const missingFramesCount = TARGET_FRAME_COUNT - framesToProcess.length;
+    if (missingFramesCount > 0) {
+        const zeroKeypointFrame = new Array(21).fill(ZERO_KEYPOINT);
+        for (let i = 0; i < missingFramesCount; i++) {
+            framesToProcess.push(zeroKeypointFrame);
+        }
     }
 
-    if (xHint && yHint) return `${xHint} & ${yHint}`;
-    if (xHint) return xHint;
-    if (yHint) return yHint;
+    // 3. Normalize each frame
+    const normalizedFrames = framesToProcess.map(frame => {
+        // Handle zero-keypoint frames (non-detected frames or padding)
+        if (frame.every(kp => kp.x === 0 && kp.y === 0 && kp.z === 0)) {
+            return frame; 
+        }
+        return normalizeKeypoints(frame);
+    }).filter(kp => kp !== null);
     
-    return 'Great position! Focus on the shape.';
+    // 4. Flatten
+    const finalVector = flattenKeypoints(normalizedFrames);
+
+    if (finalVector.length !== VECTOR_LENGTH) {
+        console.error(`Vector processing failed. Expected ${VECTOR_LENGTH}, got ${finalVector.length}.`);
+        return null;
+    }
+    
+    return finalVector;
+};
+
+
+// --- HINT LOGIC: (Simplified for Sequence Mode) ---
+const getPositionalHint = () => {
+    return 'Hold the sign steady while the sequence is being recorded (~3 seconds).'; // Updated to 3s
 };
 
 const getShapeHint = (score) => {
-    if (score < 50) return 'The shape is far off. Try matching the tutorial video.';
-    if (score < 75) return 'Almost there! Check your finger curls.';
-    if (score < 90) return 'Close! Just slight adjustments needed.';
-    return 'Perfect shape!'; 
+    if (score < 70) return 'The sequence match is low. Try holding the sign more consistently.';
+    if (score < 95) return 'Almost there! Consistent movement is key.';
+    return 'Perfect sequence consistency!'; 
 };
 
 
-// --- CUSTOM HOOK: useMediaPipeHandDetector ---
+// --- CUSTOM HOOK: useMediaPipeHandDetector (No changes, included for completeness) ---
 const useMediaPipeHandDetector = (webcamRef, videoRef) => {
     const [isModelLoading, setIsModelLoading] = useState(true);
     const [isWebcamError, setIsWebcamError] = useState(false);
@@ -117,6 +111,48 @@ const useMediaPipeHandDetector = (webcamRef, videoRef) => {
     const canvasRef = useRef(null);
     const lastHandTypeRef = useRef(null);
     
+    // Ref to track ALL incoming frames for sampling
+    const incomingFrameCounterRef = useRef(0);
+    
+    // Function to handle MediaPipe results
+    const onResults = (results) => {
+        const canvasCtx = canvasRef.current.getContext('2d');
+        
+        canvasCtx.save();
+        canvasCtx.clearRect(0, 0, VIDEO_WIDTH, VIDEO_HEIGHT); 
+        canvasCtx.translate(VIDEO_WIDTH, 0);
+        canvasCtx.scale(-1, 1);
+        canvasCtx.drawImage(results.image, 0, 0, VIDEO_WIDTH, VIDEO_HEIGHT);
+        
+        let rawKeypoints = [];
+        let handedness = null;
+
+        if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+            const landmarks = results.multiHandLandmarks[0];
+            const rawHandedness = results.multiHandedness[0].label; 
+
+            // Invert Handedness for mirror effect
+            handedness = rawHandedness === 'Left' ? 'Right' : (rawHandedness === 'Right' ? 'Left' : rawHandedness); 
+            
+            drawConnectors(canvasCtx, landmarks, Hands.HAND_CONNECTIONS, { color: '#00FF00', lineWidth: 5 });
+            drawLandmarks(canvasCtx, landmarks, { color: '#FF0000', lineWidth: 2 });
+            
+            rawKeypoints = landmarks.map(lm => ({ x: lm.x, y: lm.y, z: lm.z }));
+
+        } 
+
+        setLiveKeypoints(rawKeypoints);
+        if (handedness !== lastHandTypeRef.current) {
+            setHandType(handedness);
+            lastHandTypeRef.current = handedness;
+        } else if (!handedness && handType !== null) {
+             setHandType(null);
+        }
+
+        canvasCtx.restore(); 
+    };
+
+    // Initialization Logic
     useEffect(() => {
         setIsWebcamError(false);
         let camera = null;
@@ -154,6 +190,7 @@ const useMediaPipeHandDetector = (webcamRef, videoRef) => {
             handsRef.current.initialize().then(() => {
                 camera = new Camera(videoRef.current, { 
                     onFrame: async () => {
+                        incomingFrameCounterRef.current++; // <--- INCREMENTS ON EVERY FRAME
                         await handsRef.current.send({ image: videoRef.current });
                     },
                     width: VIDEO_WIDTH,
@@ -182,48 +219,12 @@ const useMediaPipeHandDetector = (webcamRef, videoRef) => {
     }, [webcamRef, videoRef]);
 
 
-    const onResults = (results) => {
-        const canvasCtx = canvasRef.current.getContext('2d');
-        
-        canvasCtx.save();
-        canvasCtx.clearRect(0, 0, VIDEO_WIDTH, VIDEO_HEIGHT); 
-        
-        // This causes the mirror effect for user display
-        canvasCtx.translate(VIDEO_WIDTH, 0);
-        canvasCtx.scale(-1, 1);
-        canvasCtx.drawImage(results.image, 0, 0, VIDEO_WIDTH, VIDEO_HEIGHT);
-        
-        if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-            const landmarks = results.multiHandLandmarks[0];
-            const rawHandedness = results.multiHandedness[0].label; 
-
-            // --- FIX FOR MIRRORING: INVERT THE HANDEDNESS ---
-            const handedness = rawHandedness === 'Left' ? 'Right' : (rawHandedness === 'Right' ? 'Left' : rawHandedness); 
-            
-            drawConnectors(canvasCtx, landmarks, Hands.HAND_CONNECTIONS, { color: '#00FF00', lineWidth: 5 });
-            drawLandmarks(canvasCtx, landmarks, { color: '#FF0000', lineWidth: 2 });
-            
-            const rawKeypoints = landmarks.map(lm => ({ x: lm.x, y: lm.y, z: lm.z }));
-            setLiveKeypoints(rawKeypoints);
-            
-            if (handedness !== lastHandTypeRef.current) {
-                setHandType(handedness);
-                lastHandTypeRef.current = handedness;
-            }
-
-        } else {
-            if (liveKeypoints.length > 0) setLiveKeypoints([]);
-            if (handType !== null) setHandType(null);
-        }
-
-        canvasCtx.restore(); 
-    };
-
-    return { isModelLoading, isWebcamError, liveKeypoints, handType };
+    // Expose the total frame count for sampling in the component
+    return { isModelLoading, isWebcamError, liveKeypoints, handType, incomingFrameCounter: incomingFrameCounterRef.current };
 };
 
 
-// --- HELPER COMPONENTS (FIXING THE REFERENCE ERROR) ---
+// --- HELPER COMPONENTS (No changes, included for completeness) ---
 const Navbar = () => (
     <nav className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-start items-center z-20 relative">
         <div className="text-4xl font-black tracking-wider text-white filter drop-shadow-lg">
@@ -234,17 +235,22 @@ const Navbar = () => (
 
 const AnimatedButton = ({ onClick, children, className = "", type = 'button', disabled = false, result = null }) => {
     let baseStyle = "px-8 py-4 rounded-xl font-extrabold text-xl transition-all duration-300 transform border-4 border-gray-800";
-    if (disabled && !(result === true)) {
+    
+    // Check if result is a boolean (true or false)
+    const isSuccess = result === true;
+    const isFailure = result === false;
+    
+    if (disabled && !isSuccess) {
         baseStyle += " bg-gray-400 text-gray-700 shadow-[4px_4px_0px_#4b5563] cursor-not-allowed";
-    } else if (result === true) {
+    } else if (isSuccess) {
         baseStyle += " bg-teal-400 text-gray-800 shadow-[8px_8px_0px_#1f2937] hover:bg-teal-300";
-    } else if (result === false) {
+    } else if (isFailure) {
         baseStyle += " bg-pink-500 text-white shadow-[8px_8px_0px_#1f2937] hover:bg-pink-400";
     } else {
         baseStyle += " bg-yellow-400 text-gray-800 hover:bg-yellow-300 shadow-[8px_8px_0px_#1f2937]";
     }
 
-    const isDisabled = disabled && !(result === true);
+    const isDisabled = disabled && !isSuccess;
 
     return (
         <motion.button
@@ -305,6 +311,8 @@ const signVideos = {
     'Y': 'https://v.ftcdn.net/03/72/12/97/700_F_372129723_UZuWwfDdj51lrodvl6yfKwt4lamYRrPm_ST.mp4',
     'Z': 'https://v.ftcdn.net/02/56/51/55/700_F_256515526_lQsX2PtDlBnZnCxFiILwpeJq1ecTrrkT_ST.mp4',
 };
+// --- End Helper Components ---
+
 
 // --- Main Detection Component ---
 const Detection = () => {
@@ -317,10 +325,13 @@ const Detection = () => {
     const currentLetter = processedNameLetters[currentLetterIndex] ? processedNameLetters[currentLetterIndex].toUpperCase() : 'A';
     
     const [isDetecting, setIsDetecting] = useState(false);
-    const [result, setResult] = useState(null); 
+    const [result, setResult] = useState(null); // null | true | false
     const [countdown, setCountdown] = useState(3);
-    const [currentDistance, setCurrentDistance] = useState(Infinity); 
-    const [currentScore, setCurrentScore] = useState(0);
+    const [currentScore, setCurrentScore] = useState(0); // Sequence Similarity Score (0-100)
+    const [isVectorStoreLoading, setIsVectorStoreLoading] = useState(true);
+    
+    // NEW STATE: Tracks the specific reason for a 'false' result (Timeout or Wrong Sign)
+    const [failureMessage, setFailureMessage] = useState(null); // null | 'TIMEOUT' | 'WRONG_SIGN:X' | 'NO_MATCH' 
 
     const [recordedSigns, setRecordedSigns] = useState([]);
     
@@ -328,53 +339,57 @@ const Detection = () => {
     
     const webcamContainerRef = useRef(null);
     const videoRef = useRef(null); 
-    const failTimerRef = useRef(null); 
+    const failTimerRef = useRef(null); // Kept for consistency, but logic removed/changed
     const isSuccessTransitionRef = useRef(false); 
+
+    // --- Sequence Matching Refs ---
+    const sequenceBufferRef = useRef([]); // Stores sampled raw keypoints
+    const isProcessingSequenceRef = useRef(false); // Flag to prevent multiple sequence processing
     
     const mediaRecorderRef = useRef(null);
     const recordedChunksRef = useRef([]);
 
     // --- Use MediaPipe Detector Hook ---
-    const { isModelLoading, isWebcamError, liveKeypoints, handType } = useMediaPipeHandDetector(
+    const { isModelLoading, isWebcamError, liveKeypoints, handType, incomingFrameCounter } = useMediaPipeHandDetector(
         webcamContainerRef, 
         videoRef,
-        () => {} 
     );
+    
+    // --- VectorStore Initialization ---
+    useEffect(() => {
+        const initVectorStore = async () => {
+            await SignVectorStore.loadFromFirebase();
+            setIsVectorStoreLoading(false);
+        };
+        initVectorStore();
+    }, []);
 
     // *** DYNAMICALLY CHOOSE TARGET LABELS BASED ON DETECTED HAND ***
     const baseLabel = handType ? handType.toUpperCase() : 'RIGHT'; 
-    const searchPrefix = `${baseLabel} ${currentLetter} `;
     
-    const targetSigns = LOCAL_DATASET.filter(d => 
-        d.label.startsWith(searchPrefix)
-    );
+    // Total variants available for the current sign (used for UI display)
+    const targetVariantsCount = SignVectorStore.vectors.filter(v => 
+        v.label.startsWith(`${baseLabel} ${currentLetter} `)
+    ).length;
+
     
-    // --- HINT LOGIC ---
-    const wristPosition = liveKeypoints.length > 0 ? liveKeypoints[0] : null;
-    const positionalHint = isDetecting && countdown === 0 && wristPosition 
-                         ? getPositionalHint(wristPosition) 
-                         : '';
-    
+    // --- HINT LOGIC (Simplified for Sequence Mode) ---
+    const positionalHint = isDetecting && countdown === 0 ? getPositionalHint() : '';
     const shapeHint = isDetecting && countdown === 0 ? getShapeHint(currentScore) : '';
-    const finalHint = positionalHint.includes('Great position') && shapeHint
-                    ? shapeHint 
-                    : positionalHint; 
+    const finalHint = currentScore > 0 ? shapeHint : positionalHint; 
 
     const totalLetters = processedNameLetters.length;
     const progressPercent = ((currentLetterIndex) / totalLetters) * 100;
   
-  
-    // --- VIDEO RECORDING START/STOP LOGIC ---
+    // --- VIDEO RECORDING START/STOP LOGIC (No changes, included for completeness) ---
     useEffect(() => {
         if (isDetecting && countdown === 0) {
             if (videoRef.current && videoRef.current.captureStream && !mediaRecorderRef.current) {
                 try {
                     const canvasElement = webcamContainerRef.current.querySelector('canvas');
-                    // Create a stream from the canvas, which includes the drawing
                     const stream = canvasElement ? canvasElement.captureStream() : videoRef.current.captureStream();
                     recordedChunksRef.current = [];
 
-                    // Check for supported mime types for broader compatibility
                     const mimeType = MediaRecorder.isTypeSupported('video/webm; codecs=vp9') 
                                      ? 'video/webm; codecs=vp9' 
                                      : MediaRecorder.isTypeSupported('video/webm; codecs=vp8')
@@ -391,7 +406,7 @@ const Detection = () => {
                     };
 
                     recorder.start(100); 
-                    console.log("MediaRecorder started...");
+                    // console.log("MediaRecorder started...");
 
                 } catch (error) {
                     console.error("Error starting MediaRecorder:", error);
@@ -402,7 +417,7 @@ const Detection = () => {
             
             if (recorder.state === 'recording' || recorder.state === 'paused') {
                 recorder.stop();
-                console.log("MediaRecorder stopped.");
+                // console.log("MediaRecorder stopped.");
 
                 recorder.onstop = () => {
                     if (result === true && recordedChunksRef.current.length > 0) {
@@ -431,11 +446,12 @@ const Detection = () => {
     }, [isDetecting, countdown, result, currentLetter, currentScore, baseLabel]);
 
 
-    // 1. Countdown and Fail Timer Effect (7s fail timer)
+    // 1. Countdown Effect (MAX_ATTEMPT_TIME logic removed, only countdown remains)
     useEffect(() => {
-        if (isDetecting && countdown > 0 && failTimerRef.current) {
-             clearTimeout(failTimerRef.current);
-             failTimerRef.current = null;
+        // Clear any lingering timer from previous runs just in case (though it shouldn't fire now)
+        if (failTimerRef.current) {
+            clearTimeout(failTimerRef.current);
+            failTimerRef.current = null;
         }
         
         if (!isDetecting || countdown === 0) return;
@@ -444,16 +460,6 @@ const Detection = () => {
             setCountdown(prev => {
                 if (prev <= 1) {
                     clearInterval(timer);
-                    
-                    if (prev === 1) {
-                        failTimerRef.current = setTimeout(() => {
-                            if (isDetecting && !isSuccessTransitionRef.current) { 
-                                console.log("TIME'S UP! Failed to achieve correct sign.");
-                                setIsDetecting(false);
-                                setResult(false);
-                            }
-                        }, MAX_ATTEMPT_TIME); 
-                    }
                     return 0; 
                 }
                 return prev - 1;
@@ -462,55 +468,102 @@ const Detection = () => {
 
         return () => {
             clearInterval(timer);
-            if (failTimerRef.current) clearTimeout(failTimerRef.current);
+            // failTimerRef logic removed here
         };
     }, [isDetecting, countdown]);
 
 
-    // 2. --- CORE MATCHING LOGIC EFFECT (Multi-Sample Match) ---
+    // 2. --- CORE SEQUENCE SAMPLING & SINGLE MATCH LOGIC EFFECT ---
     useEffect(() => {
-        if (!isDetecting || countdown > 0 || targetSigns.length === 0 || liveKeypoints.length === 0 || !handType) {
-            setCurrentDistance(Infinity);
-            setCurrentScore(0);
+        if (isModelLoading || isWebcamError || isVectorStoreLoading || !isDetecting || countdown > 0 || !handType) {
             return;
         }
-        
-        let minDistance = Infinity;
-        let maxScore = 0;
-        
-        for (const targetSign of targetSigns) {
-            const { distance, score } = calculateDistanceAndScore(liveKeypoints, targetSign.keypoints);
-            
-            if (distance < minDistance) {
-                minDistance = distance;
-            }
-            if (score > maxScore) {
-                maxScore = score;
-            }
-        }
 
-        setCurrentDistance(minDistance);
-        setCurrentScore(maxScore);
-        
-        if (minDistance <= DISTANCE_THRESHOLD) {
-            isSuccessTransitionRef.current = true;
+        // Sampling Logic: Only sample every 10th frame
+        if (incomingFrameCounter % SAMPLE_RATE === 0) { // <--- CORE SAMPLING CHECK uses SAMPLE_RATE = 10
             
-            if (failTimerRef.current) {
-                clearTimeout(failTimerRef.current);
-                failTimerRef.current = null;
+            // Determine keypoints for the frame (21 points or 21 zero placeholders)
+            const keypointsForFrame = liveKeypoints.length === 21 
+                                    ? liveKeypoints 
+                                    : new Array(21).fill(ZERO_KEYPOINT);
+            
+            // Only push to buffer if we haven't reached the target count
+            if (sequenceBufferRef.current.length < TARGET_FRAME_COUNT) { // TARGET_FRAME_COUNT = 7
+                 sequenceBufferRef.current.push(keypointsForFrame);
             }
-            
-            setIsDetecting(false); 
-            setResult(true); 
-            
-            const clearSuccessFlagTimer = setTimeout(() => {
-                isSuccessTransitionRef.current = false;
-            }, 1500);
 
-            return () => clearTimeout(clearSuccessFlagTimer);
+            // Sequence Complete: Process and Match
+            if (sequenceBufferRef.current.length >= TARGET_FRAME_COUNT && !isProcessingSequenceRef.current) {
+                isProcessingSequenceRef.current = true;
+                
+                // 1. Process the sampled frames into the final fixed-length vector (Length 441)
+                const queryVector = processSequenceToVector(sequenceBufferRef.current);
+                
+                // 2. Reset the buffer and flag for the next sequence attempt (THIS IS THE ONLY RESET POINT)
+                sequenceBufferRef.current = [];
+                isProcessingSequenceRef.current = false;
+                
+                let isSuccessfulMatch = false;
+
+                if (queryVector) {
+                    // 3. Find Best Match using Cosine Similarity + Averaged Vectors
+                    const bestMatch = SignVectorStore.findBestMatchAveraged(queryVector); 
+
+                    if (bestMatch) {
+                        const similarityScore = bestMatch.similarity;
+                        const scorePercent = Math.round(similarityScore * 100);
+                        setCurrentScore(scorePercent);
+                        
+                        const matchedLetter = bestMatch.label.split(' ')[1];
+                        const matchedHand = bestMatch.label.split(' ')[0];
+                        
+                        const isTargetHand = matchedHand === handType.toUpperCase();
+                        const isMatchCorrectLetter = (matchedLetter === currentLetter);
+                        
+                        // LOGIC: Check for a strong match (>= SIMILARITY_THRESHOLD, which is 0.70)
+                        if (isTargetHand && isMatchCorrectLetter && similarityScore >= SIMILARITY_THRESHOLD) {
+                            // SUCCESS
+                            isSuccessfulMatch = true;
+                            isSuccessTransitionRef.current = true;
+                            setIsDetecting(false); 
+                            setResult(true); 
+                            setFailureMessage(null); // Clear any previous failure message
+                            
+                            const clearSuccessFlagTimer = setTimeout(() => {
+                                isSuccessTransitionRef.current = false;
+                            }, 1500);
+
+                            return () => clearTimeout(clearSuccessFlagTimer);
+                        } else if (isTargetHand && similarityScore >= SIMILARITY_THRESHOLD) {
+                            // FAILURE: Strong match (>= 70%) to the WRONG letter 
+                            console.log(`[Detection] Strong match to WRONG sign: ${bestMatch.label} (${scorePercent}%)`);
+                            setFailureMessage(`WRONG_SIGN:${matchedLetter}`); // <-- SET FAILURE REASON
+                            setCurrentScore(scorePercent); // Keep the score for display
+                        } else {
+                            // FAILURE: Not a strong match (low score or correct sign but low consistency)
+                            console.log(`[Detection] Best match: ${bestMatch.label} (${scorePercent}%) - No match found.`);
+                            setFailureMessage('NO_MATCH'); // <-- NEW FAILURE REASON
+                            setCurrentScore(scorePercent); // Keep the score for display
+                        }
+                    } else {
+                        setCurrentScore(0);
+                        setFailureMessage('NO_MATCH');
+                        console.log("[Detection] No match found or VectorStore empty.");
+                    }
+                } else {
+                     setCurrentScore(0);
+                     setFailureMessage('NO_MATCH');
+                }
+                
+                // NEW LOGIC: If a successful match was NOT achieved, stop detecting immediately.
+                if (!isSuccessfulMatch) {
+                    setIsDetecting(false); 
+                    setResult(false);
+                }
+            }
         }
     
-    }, [liveKeypoints, isDetecting, countdown, targetSigns, handType]);
+    }, [liveKeypoints, isDetecting, countdown, handType, incomingFrameCounter, isModelLoading, isWebcamError, isVectorStoreLoading, currentLetter]);
 
 
     // Main Detection Action (Handles Start, Try Again, and Next Letter clicks)
@@ -524,8 +577,8 @@ const Detection = () => {
             
             setCurrentLetterIndex(prev => prev + 1);
             setResult(null); 
-            setCurrentDistance(Infinity); 
             setCurrentScore(0); 
+            setFailureMessage(null); // Clear failure message
             
             setIsDetecting(true);
             setCountdown(3); 
@@ -533,49 +586,65 @@ const Detection = () => {
         }
 
         // 2. Handle START/TRY AGAIN click (result is null or false)
-        if (isModelLoading || isDetecting || isWebcamError) return;
+        if (isModelLoading || isDetecting || isWebcamError || isVectorStoreLoading) return;
 
-        if (targetSigns.length === 0) {
-            alert(`Error: No dataset entries found for '${baseLabel} ${currentLetter}' in dataset.json. Please record at least one version!`);
+        if (SignVectorStore.vectors.length === 0) {
+            alert(`Error: VectorStore is empty. Please ensure data is correctly stored in Firestore.`);
+            return;
+        }
+
+        if (targetVariantsCount === 0) {
+            alert(`Error: No dataset entries found for '${baseLabel} ${currentLetter}' in Firestore. Please record at least one version!`);
             return;
         }
 
         if (result !== null) setResult(null); 
+        setFailureMessage(null); // Clear failure message
+        
         if (failTimerRef.current) {
             clearTimeout(failTimerRef.current);
             failTimerRef.current = null;
         }
         
+        // Reset sequence state
+        sequenceBufferRef.current = [];
+        isProcessingSequenceRef.current = false;
+
         setIsDetecting(true); 
         setCountdown(3);
     };
 
 
     const getButtonText = () => {
-        const signsFound = targetSigns.length;
         if (isWebcamError) {
             return <><FiVideoOff className='mr-2' /> CAMERA BLOCKED! Enable & Refresh</>;
         }
-        if (isModelLoading) {
-            return <><FiZap className='mr-2 animate-spin' /> Loading Hand Tracker...</>;
+        if (isModelLoading || isVectorStoreLoading) {
+            return <><FiZap className='mr-2 animate-spin' /> Loading Hand Tracker/Vector Store...</>;
         }
         if (isDetecting) {
             if (countdown > 0) {
                  return `GET READY! (${countdown})`;
             }
-            if (signsFound === 0) {
+            if (targetVariantsCount === 0) {
                 return `ERROR: Data for ${baseLabel} ${currentLetter} NOT FOUND!`;
             }
-            return `SIGN ${currentLetter} NOW! ANALYZING ${signsFound} VARIANTS...`;
+            return `SIGN ${currentLetter} NOW! ANALYZING SEQUENCE...`;
         } else if (result === true) {
             if (currentLetterIndex === processedNameLetters.length - 1) {
                 return <><FiCheckCircle className='mr-2' /> DONE! See Final Results</>;
             }
             return <><FiCheckCircle className='mr-2' /> PERFECT! Next Letter!</>;
         } else if (result === false) {
-            return <><FiRefreshCcw className='mr-2' /> Try That Again, Partner!</>;
+            // NEW LOGIC: Differentiate between Timeout/No Match and Wrong Sign
+            if (failureMessage && failureMessage.startsWith('WRONG_SIGN')) {
+                const wrongLetter = failureMessage.split(':')[1];
+                return <><FiXCircle className='mr-2' /> WRONG SIGN! You signed {wrongLetter}. Try Again.</>;
+            }
+             // Covers NO_MATCH and old TIMEOUT (which is now just NO_MATCH after first sequence)
+            return <><FiRefreshCcw className='mr-2' /> No Match Found! Try Again.</>;
         } 
-        return <><FiZap className='mr-2' /> Start BOLO Check</>;
+        return <><FiZap className='mr-2' /> Start BOLO Sequence Check</>;
     };
 
     const getHeaderColor = (r) => {
@@ -589,7 +658,7 @@ const Detection = () => {
         <div className="min-h-screen bg-gradient-to-br from-pink-500 to-teal-500 flex flex-col overflow-hidden relative border-8 border-gray-800">
             <Navbar />
             
-            {/* Animated Decor Elements (FIXED: Added unique keys) */}
+            {/* Animated Decor Elements */}
             <WiggleStar key="star-tl" size="5xl" position="top-10 left-10" />
             <WiggleStar key="star-br" size="4xl" position="bottom-10 right-10" />
 
@@ -649,8 +718,8 @@ const Detection = () => {
                                 <p className="text-lg font-black text-gray-800">BOLO TIP:</p>
                                 <ul className="text-base text-gray-700 list-disc pl-5 mt-1">
                                     <li>Keep your wrist firm!</li>
-                                    <li>Match the shape EXACTLY!</li>
-                                    <li>Target: <span className="font-bold text-pink-500">{baseLabel} {currentLetter} (Matching against {targetSigns.length} variants)</span></li>
+                                    <li>Match the sequence consistently over the capture time!</li>
+                                    <li>Target: <span className="font-bold text-pink-500">{baseLabel} {currentLetter} (Matching against {targetVariantsCount} variants)</span></li>
                                 </ul>
                             </div>
                         </div>
@@ -672,7 +741,6 @@ const Detection = () => {
                         <div className="flex-1 bg-gray-900 flex items-center justify-center relative aspect-video overflow-hidden">
                             <video 
                                 ref={videoRef} 
-                                // Video element now visible (but visually covered by canvas) for MediaRecorder to capture it.
                                 style={{ position: 'absolute', width: VIDEO_WIDTH, height: VIDEO_HEIGHT, transform: 'scaleX(-1)' }} 
                                 autoPlay 
                                 playsInline 
@@ -690,7 +758,7 @@ const Detection = () => {
                             
                             <AnimatePresence>
                                 {/* Loading State */}
-                                {isModelLoading && !isWebcamError && (
+                                {(isModelLoading || isVectorStoreLoading) && !isWebcamError && (
                                     <motion.div
                                         key="loading"
                                         className="absolute inset-0 flex items-center justify-center bg-gray-900 z-10"
@@ -700,7 +768,7 @@ const Detection = () => {
                                     >
                                         <div className="text-center">
                                             <div className="text-6xl mb-4 text-white animate-pulse">📡</div>
-                                            <p className="text-white text-xl font-bold">Loading Hand Tracker...</p>
+                                            <p className="text-white text-xl font-bold">Loading Hand Tracker/Vector Store...</p>
                                         </div>
                                     </motion.div>
                                 )}
@@ -720,7 +788,7 @@ const Detection = () => {
                                 )}
 
                                 {/* Feedback Banner */}
-                                {(!isModelLoading && !isWebcamError) && (isDetecting || result !== null) && (
+                                {(!isModelLoading && !isWebcamError && !isVectorStoreLoading) && (isDetecting || result !== null) && (
                                     <motion.div
                                         key="minimal-feedback"
                                         className="absolute top-0 inset-x-0 p-3 z-30 bg-gray-800/90 border-b-4 border-gray-800"
@@ -737,7 +805,7 @@ const Detection = () => {
                                             )}
                                             {isDetecting && countdown === 0 && (
                                                 <p className="text-3xl font-black text-pink-400 animate-pulse">
-                                                    MATCHING... {currentScore}%
+                                                    ANALYZING SEQUENCE... {sequenceBufferRef.current.length}/{TARGET_FRAME_COUNT}
                                                 </p>
                                             )}
                                             {result === true && (
@@ -747,7 +815,10 @@ const Detection = () => {
                                             )}
                                             {result === false && (
                                                 <p className="text-3xl font-black text-pink-400">
-                                                    <FiXCircle className='inline mr-2' /> TRY AGAIN!
+                                                    <FiXCircle className='inline mr-2' /> 
+                                                    {failureMessage && failureMessage.startsWith('WRONG_SIGN') ? 
+                                                        `WRONG SIGN! (Matched ${failureMessage.split(':')[1]})` : 
+                                                        'NO MATCH FOUND!'}
                                                 </p>
                                             )}
                                         </div>
@@ -755,34 +826,14 @@ const Detection = () => {
                                 )}
                             </AnimatePresence>
 
-                            {/* Real-time score and hint display */}
-                            {isDetecting && countdown === 0 && !isModelLoading && !isWebcamError && (
-                                <div className={`absolute bottom-0 inset-x-0 p-3 z-30 bg-gray-800/90 border-t-4 ${currentDistance <= DISTANCE_THRESHOLD ? 'border-teal-400' : 'border-pink-400'}`}>
-                                    <div className="flex justify-between items-center text-white font-bold">
-                                        <span>SCORE: </span>
-                                        <motion.span 
-                                            key={currentScore}
-                                            className={`text-2xl ${currentScore >= 90 ? 'text-teal-400' : currentScore >= 70 ? 'text-yellow-400' : 'text-pink-400'}`}
-                                            initial={{ scale: 0.8, opacity: 0.5 }}
-                                            animate={{ scale: 1, opacity: 1 }}
-                                            transition={{ type: 'spring', stiffness: 500, damping: 20 }}
-                                        >
-                                            {currentScore}%
-                                        </motion.span>
-                                    </div>
-                                    {finalHint && (
-                                        <p className={`mt-2 text-sm font-medium ${currentScore >= 90 ? 'text-teal-300' : 'text-yellow-300'}`}>
-                                            👉 {finalHint}
-                                        </p>
-                                    )}
-                                </div>
-                            )}
+                            {/* Real-time score and hint display - THIS BLOCK HAS BEEN REMOVED */}
+                            
                         </div>
                         
                         <div className="p-6">
                             <AnimatedButton
                                 onClick={handleDetectionAction}
-                                disabled={isDetecting || isModelLoading || isWebcamError || (liveKeypoints.length === 0 && result === false)}
+                                disabled={isDetecting || isModelLoading || isWebcamError || isVectorStoreLoading || (liveKeypoints.length === 0 && result === false && failureMessage === 'TIMEOUT')}
                                 result={result}
                                 className="w-full py-4 text-2xl font-black"
                             >
