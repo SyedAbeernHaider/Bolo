@@ -187,7 +187,7 @@ const NameInput = () => {
       
       {/* Floating Emojis */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        {floatingEmojis.map(props => <FloatingEmoji {...props} />)}
+        {floatingEmojis.map(props => <FloatingEmoji key={props.id} {...props} />)}
       </div>
       
       {/* Animated Decor Elements */}

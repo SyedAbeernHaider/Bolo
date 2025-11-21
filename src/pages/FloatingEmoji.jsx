@@ -1,3 +1,4 @@
+import { motion } from "framer-motion";
 const FloatingEmoji = (props) => {
   const { id, x, y, size, duration, delay, emoji } = props;
   return (

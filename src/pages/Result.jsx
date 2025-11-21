@@ -27,6 +27,8 @@ import { fetchFile, toBlobURL } from "@ffmpeg/util";
 import Navbar from "./Navbar";
 import AnimatedButton from "./AnimatedButton";
 import { fireworkElements, floatingEmojis } from "../utils/utils";
+import FloatingEmoji from "./FloatingEmoji";
+import WiggleStar from "./WiggleStar";
 
 const Result = () => {
   const videoRef = useRef(null);
@@ -41,11 +43,10 @@ const Result = () => {
 
   const [showConfetti, setShowConfetti] = useState(true);
   const [email, setEmail] = useState("");
-  
+
   const [currentReplayIndex, setCurrentReplayIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(true);
   const [processStatus, setProcessStatus] = useState("idle");
-  const [statusMessage, setStatusMessage] = useState("");
   const [isMerging, setIsMerging] = useState(false);
   const [ffmpegLoaded, setFfmpegLoaded] = useState(false);
   const ffmpegRef = useRef(new FFmpeg());
@@ -182,7 +183,6 @@ const Result = () => {
     }
 
     setProcessStatus("merging");
-    setStatusMessage("Stitching video clips...");
     const ffmpeg = ffmpegRef.current;
 
     try {
@@ -213,9 +213,6 @@ const Result = () => {
 
       const data = await ffmpeg.readFile("output.webm");
       const videoBlob = new Blob([data.buffer], { type: "video/webm" });
-
-      // --- NEW: GENERATE THUMBNAIL ---
-      // Take a screenshot at the 1-second mark (-ss 00:00:01)
       await ffmpeg.exec([
         "-i",
         "output.webm",
@@ -235,7 +232,6 @@ const Result = () => {
 
       // --- STEP B: UPLOAD TO FIREBASE ---
       setProcessStatus("uploading");
-      setStatusMessage("Uploading to cloud...");
 
       const uniqueId = `${Date.now()}_${Math.random()
         .toString(36)
@@ -257,8 +253,6 @@ const Result = () => {
       const thumbURL = await getDownloadURL(thumbRef);
       // --- STEP C: SEND EMAIL ---
       setProcessStatus("sending_email");
-      setStatusMessage("Dispatching email...");
-
       // REPLACE THESE WITH YOUR EMAILJS CREDENTIALS
       const SERVICE_ID = "service_hjcgutd";
       const TEMPLATE_ID = "template_lthtia6";
@@ -278,17 +272,13 @@ const Result = () => {
       await emailjs.send(SERVICE_ID, TEMPLATE_ID, templateParams, PUBLIC_KEY);
 
       setProcessStatus("success");
-      setStatusMessage("Sent Successfully!");
-
       // Reset status after a delay
       setTimeout(() => {
         setProcessStatus("idle");
-        setStatusMessage("");
       }, 5000);
     } catch (error) {
       console.error("Workflow Error:", error);
       setProcessStatus("error");
-      setStatusMessage("Failed. Check console.");
     }
   };
   useEffect(() => {
@@ -350,7 +340,6 @@ const Result = () => {
     return () => clearTimeout(confettiTimer);
   }, []);
 
-  
   return (
     <div className="min-h-screen bg-gradient-to-br from-pink-500 to-teal-500 flex flex-col overflow-hidden relative border-8 border-gray-800">
       {/* Confetti & Fireworks */}
@@ -501,6 +490,7 @@ const Result = () => {
                   playsInline
                   className="w-full h-full object-contain"
                   style={{ transform: "scaleX(-1)" }}
+                  crossOrigin="anonymous"
                 />
 
                 <div className="absolute inset-0 flex flex-col justify-between p-3 bg-black/20">
@@ -583,9 +573,6 @@ const Result = () => {
                     placeholder="Enter your email address"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    // disabled={
-                    //   emailStatus === "sending" || emailStatus === "sent"
-                    // }
                     disabled={
                       processStatus !== "idle" &&
                       processStatus !== "error" &&
@@ -647,7 +634,7 @@ const Result = () => {
                           : "text-teal-600"
                       }`}
                     >
-                      {statusMessage}
+                      {/* {statusMessage} */}
                     </motion.div>
                   )}
                 </AnimatePresence>
