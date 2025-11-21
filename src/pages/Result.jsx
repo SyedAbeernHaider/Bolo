@@ -259,14 +259,17 @@ const Result = () => {
       const PUBLIC_KEY = "6YNMQAWD1xol84C-9";
 
       const templateParams = {
-        email,
         user_name: userName,
+        email: email,
         name: userName,
+
         video_link: downloadURL,
         thumbnail_link: thumbURL,
-        message: `Great job! You scored ${Math.round(
-          recordedSigns.reduce((a, b) => a + b.score, 0) / recordedSigns.length
-        )}% accuracy.`,
+
+        bolo_link: "https://bolo.connecthear.org",
+        instagram_link: "https://www.instagram.com/connecthear",
+        linkedin_link: "https://www.linkedin.com/in/arhumishtiaq",
+        facebook_link: "https://www.facebook.com/connecthearofficial",
       };
 
       await emailjs.send(SERVICE_ID, TEMPLATE_ID, templateParams, PUBLIC_KEY);
