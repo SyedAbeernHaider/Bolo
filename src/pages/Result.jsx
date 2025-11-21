@@ -254,9 +254,9 @@ const Result = () => {
       // --- STEP C: SEND EMAIL ---
       setProcessStatus("sending_email");
       // REPLACE THESE WITH YOUR EMAILJS CREDENTIALS
-      const SERVICE_ID = "service_hjcgutd";
-      const TEMPLATE_ID = "template_lthtia6";
-      const PUBLIC_KEY = "tUMWweeJ3LuLXsDJH";
+      const SERVICE_ID = "service_3sl5dqc";
+      const TEMPLATE_ID = "template_ujom2df";
+      const PUBLIC_KEY = "6YNMQAWD1xol84C-9";
 
       const templateParams = {
         email,
