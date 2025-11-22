@@ -1,14 +1,28 @@
 
 const Navbar = () => {
     return (
-        <nav className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-start items-center z-40 relative">
-            <div className="text-3xl font-black tracking-wider text-white filter drop-shadow-lg">
-                <span className="text-yellow-400">B</span>
-                <span className="text-pink-500">O</span>
-                <span className="text-teal-400">L</span>
-                <span className="text-yellow-400">O</span>
+        <div className="flex justify-center items-center my-6 md:my-10">
+            <div className="flex items-center gap-3">
+
+                {/* BOLO */}
+                <span className="google-sans text-white text-3xl md:text-5xl font-black leading-none">
+                    BOLO
+                </span>
+
+                {/* BY */}
+                <span className="google-sans text-white text-base md:text-lg font-semibold leading-none">
+                    by
+                </span>
+
+                {/* Logo */}
+                <img
+                    src="/logo/CH White Logo.png"
+                    alt="Connect Hear"
+                    className="h-5 md:h-8 w-auto object-contain leading-none"
+                />
+
             </div>
-        </nav>
+        </div>
     )
 }
 

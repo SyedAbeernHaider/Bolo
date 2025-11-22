@@ -3,17 +3,22 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { FiArrowRight, FiZap, FiVolumeX, FiRefreshCcw, FiCheckCircle, FiXCircle, FiVideoOff } from 'react-icons/fi';
 
+// --- Firebase Storage Imports ---
+import { storage } from '../firebase'; // Assuming firebase.js is in the parent directory
+import { ref, getDownloadURL } from 'firebase/storage';
+
 // --- MediaPipe Imports ---
 import { Hands } from '@mediapipe/hands';
 import { Camera } from '@mediapipe/camera_utils';
 import { drawConnectors, drawLandmarks } from '@mediapipe/drawing_utils';
 
 // --- VectorStore Import ---
-import { SignVectorStore } from './VectorStore'; 
+import { SignVectorStore } from './VectorStore';
+import Navbar from './Navbar';
 
 // --- MediaPipe Constants (Must match Dataset.jsx for fixed vector length) ---
-const VIDEO_WIDTH = 640; 
-const VIDEO_HEIGHT = 480;
+const VIDEO_WIDTH = 800;
+const VIDEO_HEIGHT = 600;
 
 // Sequence Constants (UPDATED to match new Dataset.jsx logic)
 const TARGET_FRAME_COUNT = 7; // Fixed length of the sequence
@@ -24,7 +29,9 @@ const ZERO_KEYPOINT = { x: 0, y: 0, z: 0 };
 
 // --- DETECTION THRESHOLDS (Using Cosine Similarity) ---
 const SIMILARITY_THRESHOLD = 0.70; // Cosine Similarity threshold (0.70 = 70%)
-const MAX_ATTEMPT_TIME = 7000; // Time to attempt the sign (can remain 7s even if the sequence is 3s)
+// AUTO-ADVANCE CONSTANT
+const AUTO_ADVANCE_DELAY = 1500; // 1.5 seconds delay for visual feedback
+
 
 // --- HELPER FUNCTION: Normalizes keypoints for scale and position invariance (Copied from Dataset.jsx) ---
 const normalizeKeypoints = (keypoints) => {
@@ -43,22 +50,22 @@ const normalizeKeypoints = (keypoints) => {
 const flattenKeypoints = (normalizedFrames) => {
     const vector = [];
     normalizedFrames.forEach(frame => {
-        frame.forEach(kp => {           
-            vector.push(kp.x, kp.y, kp.z); 
+        frame.forEach(kp => {
+            vector.push(kp.x, kp.y, kp.z);
         });
     });
-    return vector; 
+    return vector;
 };
 
 // --- CORE FUNCTION: Process collected frames into the fixed-length vector ---
 const processSequenceToVector = (rawFrames) => {
     let framesToProcess = [...rawFrames]; // Copy the buffer
-    
+
     // 1. Truncate if needed
     if (framesToProcess.length > TARGET_FRAME_COUNT) {
         framesToProcess = framesToProcess.slice(0, TARGET_FRAME_COUNT);
     }
-    
+
     // 2. Pad with 21 zero-keypoint frames if frames are missing (low FPS)
     const missingFramesCount = TARGET_FRAME_COUNT - framesToProcess.length;
     if (missingFramesCount > 0) {
@@ -72,11 +79,11 @@ const processSequenceToVector = (rawFrames) => {
     const normalizedFrames = framesToProcess.map(frame => {
         // Handle zero-keypoint frames (non-detected frames or padding)
         if (frame.every(kp => kp.x === 0 && kp.y === 0 && kp.z === 0)) {
-            return frame; 
+            return frame;
         }
         return normalizeKeypoints(frame);
     }).filter(kp => kp !== null);
-    
+
     // 4. Flatten
     const finalVector = flattenKeypoints(normalizedFrames);
 
@@ -84,91 +91,91 @@ const processSequenceToVector = (rawFrames) => {
         console.error(`Vector processing failed. Expected ${VECTOR_LENGTH}, got ${finalVector.length}.`);
         return null;
     }
-    
+
     return finalVector;
 };
 
 
 // --- HINT LOGIC: (Simplified for Sequence Mode) ---
 const getPositionalHint = () => {
-    return 'Hold the sign steady while the sequence is being recorded (~3 seconds).'; // Updated to 3s
+    return 'Hold the sign steady while the sequence is being recorded (~2-3 seconds).';
 };
 
 const getShapeHint = (score) => {
     if (score < 70) return 'The sequence match is low. Try holding the sign more consistently.';
     if (score < 95) return 'Almost there! Consistent movement is key.';
-    return 'Perfect sequence consistency!'; 
+    return 'Perfect sequence consistency!';
 };
 
 
-// --- CUSTOM HOOK: useMediaPipeHandDetector (No changes, included for completeness) ---
+// --- CUSTOM HOOK: useMediaPipeHandDetector ---
 const useMediaPipeHandDetector = (webcamRef, videoRef) => {
     const [isModelLoading, setIsModelLoading] = useState(true);
     const [isWebcamError, setIsWebcamError] = useState(false);
-    const [liveKeypoints, setLiveKeypoints] = useState([]); 
-    const [handType, setHandType] = useState(null); 
+    const [liveKeypoints, setLiveKeypoints] = useState([]);
+    const [handType, setHandType] = useState(null);
     const handsRef = useRef(null);
     const canvasRef = useRef(null);
     const lastHandTypeRef = useRef(null);
-    
+
     // Ref to track ALL incoming frames for sampling
     const incomingFrameCounterRef = useRef(0);
-    
+
     // Function to handle MediaPipe results
     const onResults = (results) => {
         const canvasCtx = canvasRef.current.getContext('2d');
-        
+
         canvasCtx.save();
-        canvasCtx.clearRect(0, 0, VIDEO_WIDTH, VIDEO_HEIGHT); 
+        canvasCtx.clearRect(0, 0, VIDEO_WIDTH, VIDEO_HEIGHT);
         canvasCtx.translate(VIDEO_WIDTH, 0);
         canvasCtx.scale(-1, 1);
         canvasCtx.drawImage(results.image, 0, 0, VIDEO_WIDTH, VIDEO_HEIGHT);
-        
+
         let rawKeypoints = [];
         let handedness = null;
 
         if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
             const landmarks = results.multiHandLandmarks[0];
-            const rawHandedness = results.multiHandedness[0].label; 
+            const rawHandedness = results.multiHandedness[0].label;
 
             // Invert Handedness for mirror effect
-            handedness = rawHandedness === 'Left' ? 'Right' : (rawHandedness === 'Right' ? 'Left' : rawHandedness); 
-            
+            handedness = rawHandedness === 'Left' ? 'Right' : (rawHandedness === 'Right' ? 'Left' : rawHandedness);
+
             drawConnectors(canvasCtx, landmarks, Hands.HAND_CONNECTIONS, { color: '#00FF00', lineWidth: 5 });
             drawLandmarks(canvasCtx, landmarks, { color: '#FF0000', lineWidth: 2 });
-            
+
             rawKeypoints = landmarks.map(lm => ({ x: lm.x, y: lm.y, z: lm.z }));
 
-        } 
+        }
 
         setLiveKeypoints(rawKeypoints);
         if (handedness !== lastHandTypeRef.current) {
             setHandType(handedness);
             lastHandTypeRef.current = handedness;
         } else if (!handedness && handType !== null) {
-             setHandType(null);
+            setHandType(null);
         }
 
-        canvasCtx.restore(); 
+        canvasCtx.restore();
     };
 
     // Initialization Logic
     useEffect(() => {
         setIsWebcamError(false);
         let camera = null;
-        
+
         const canvas = document.createElement('canvas');
         canvas.width = VIDEO_WIDTH;
         canvas.height = VIDEO_HEIGHT;
         canvasRef.current = canvas;
 
         if (webcamRef.current) {
-            webcamRef.current.innerHTML = ''; 
+            webcamRef.current.innerHTML = '';
             webcamRef.current.appendChild(canvas);
             canvas.style.width = '100%';
             canvas.style.height = '100%';
             canvas.style.objectFit = 'cover';
-            canvas.style.borderRadius = '1.5rem'; 
+            canvas.style.borderRadius = '1.5rem';
         }
 
         handsRef.current = new Hands({
@@ -185,10 +192,10 @@ const useMediaPipeHandDetector = (webcamRef, videoRef) => {
         });
 
         handsRef.current.onResults(onResults);
-        
+
         if (videoRef.current) {
             handsRef.current.initialize().then(() => {
-                camera = new Camera(videoRef.current, { 
+                camera = new Camera(videoRef.current, {
                     onFrame: async () => {
                         incomingFrameCounterRef.current++; // <--- INCREMENTS ON EVERY FRAME
                         await handsRef.current.send({ image: videoRef.current });
@@ -224,25 +231,20 @@ const useMediaPipeHandDetector = (webcamRef, videoRef) => {
 };
 
 
-// --- HELPER COMPONENTS (No changes, included for completeness) ---
-const Navbar = () => (
-    <nav className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-start items-center z-20 relative">
-        <div className="text-4xl font-black tracking-wider text-white filter drop-shadow-lg">
-            <span className="text-yellow-400">B</span><span className="text-pink-500">O</span><span className="text-teal-400">L</span><span className="text-yellow-400">O</span>
-        </div>
-    </nav>
-);
+// --- HELPER COMPONENTS ---
 
 const AnimatedButton = ({ onClick, children, className = "", type = 'button', disabled = false, result = null }) => {
     let baseStyle = "px-8 py-4 rounded-xl font-extrabold text-xl transition-all duration-300 transform border-4 border-gray-800";
-    
+
     // Check if result is a boolean (true or false)
     const isSuccess = result === true;
     const isFailure = result === false;
-    
+
     if (disabled && !isSuccess) {
-        baseStyle += " bg-gray-400 text-gray-700 shadow-[4px_4px_0px_#4b5563] cursor-not-allowed";
+        // Updated style for disabled button: less contrast for cool-down timer
+        baseStyle += " bg-gray-400 text-gray-700 shadow-[4px_4px_0px_#4b5563] cursor-not-allowed opacity-70";
     } else if (isSuccess) {
+        // Only final sign uses the success style and is clickable for navigation
         baseStyle += " bg-teal-400 text-gray-800 shadow-[8px_8px_0px_#1f2937] hover:bg-teal-300";
     } else if (isFailure) {
         baseStyle += " bg-pink-500 text-white shadow-[8px_8px_0px_#1f2937] hover:bg-pink-400";
@@ -257,8 +259,8 @@ const AnimatedButton = ({ onClick, children, className = "", type = 'button', di
             type={type}
             onClick={onClick}
             className={`${baseStyle} ${className} flex items-center justify-center relative overflow-hidden`}
-            whileHover={!isDisabled ? { scale: 1.03, boxShadow: "12px 12px 0px #1f2937", y: -2, rotate: 1 } : {}} 
-            whileTap={!isDisabled ? { scale: 0.95, boxShadow: "4px 4px 0px #1f2937", y: 0, rotate: -1 } : {}} 
+            whileHover={!isDisabled ? { scale: 1.03, boxShadow: "12px 12px 0px #1f2937", y: -2, rotate: 1 } : {}}
+            whileTap={!isDisabled ? { scale: 0.95, boxShadow: "4px 4px 0px #1f2937", y: 0, rotate: -1 } : {}}
             disabled={isDisabled}
         >
             {children}
@@ -269,92 +271,80 @@ const AnimatedButton = ({ onClick, children, className = "", type = 'button', di
 const WiggleStar = ({ size, position }) => (
     <motion.div
         className={`absolute text-${size} ${position} filter drop-shadow opacity-70`}
-        animate={{ 
+        animate={{
             rotate: [0, 30, -30, 0],
-            scale: [1, 1.3, 1] 
+            scale: [1, 1.3, 1]
         }}
-        transition={{ 
-            duration: 2.5, 
-            repeat: Infinity, 
-            ease: "easeInOut" 
+        transition={{
+            duration: 2.5,
+            repeat: Infinity,
+            ease: "easeInOut"
         }}
     >
         ✨
     </motion.div>
 );
-
-const signVideos = {
-    'A': 'https://v.ftcdn.net/02/56/49/00/700_F_256490033_wEjUPH9ngCatJZTRidpla1ML9SqEPoTB_ST.mp4',
-    'B': 'https://v.ftcdn.net/02/56/49/09/700_F_256490938_gokVW30m5WmOOm9fYW0VPnzqvkADZ5k6_ST.mp4',
-    'C': 'https://v.ftcdn.net/03/72/12/98/700_F_372129825_ogi8JWJAQZFGmecp7CPNnjOJRNh1sZQW_ST.mp4',
-    'D': 'https://v.ftcdn.net/02/56/49/28/700_F_256492865_E6wfj8gSc1hNBh3VmkvM1a34ldAF3bC7_ST.mp4',
-    'E': 'https://v.ftcdn.net/02/56/49/38/700_F_256493860_vZrSvpLC71Z3seHmIu9T9Y9ItlRgQcKB_ST.mp4',
-    'F': 'https://v.ftcdn.net/02/56/49/46/700_F_256494637_8VWziV7A3QH1IB52YKuaOQj0MS2K0gHz_ST.mp4',
-    'G': 'https://v.ftcdn.net/04/51/33/31/700_F_451333158_X3es3ekr2rOJ0gkEkAS8ClRMooAJQEZ4_ST.mp4',
-    'H': 'https://v.ftcdn.net/02/56/49/61/700_F_256496110_3SuAe0VSHHTvXNIY6MilGoNyOW9Upojj_ST.mp4',
-    'I': 'https://v.ftcdn.net/10/22/81/91/700_F_1022819113_2qPxCtY39jMRkTOIOm0lKAbDCKtLj47C_ST.mp4',
-    'J': 'https://v.ftcdn.net/02/56/49/76/700_F_256497609_HfniMe27SEDmMQRVzXGYyCroUzIAxRL5_ST.mp4',
-    'K': 'https://v.ftcdn.net/04/51/75/13/700_F_451751352_LbZyKjMRFVHenWSp8XvRr8C87hJPxt9m_ST.mp4',
-    'L': 'https://v.ftcdn.net/04/51/33/31/700_F_451333156_VkW6U39AYbY39wbYwbsDJT0GR4HG6cPv_ST.mp4',
-    'M': 'https://v.ftcdn.net/02/56/50/01/700_F_256500182_ghedqfv1DXwIsH0TlJtlpQHyOzHxmRaJ_ST.mp4',
-    'N': 'https://v.ftcdn.net/04/51/33/31/700_F_451333159_p8rq5IqKuKcwxUFj6PeiREAT8wemaXSz_ST.mp4',
-    'O': 'https://v.ftcdn.net/04/51/72/73/700_F_451727343_5ciMyeGJHWsB3dtomkBuhM1hTfNDtm6A_ST.mp4',
-    'P': 'https://v.ftcdn.net/04/51/75/13/700_F_451751352_LbZyKjMRFVHenWSp8XvRr8C87hJPxt9m_ST.mp4',
-    'Q': 'https://v.ftcdn.net/02/56/50/51/700_F_256505141_QgNcPntv88FNTSXDJEBtnvVMDpLGmWt3_ST.mp4',
-    'R': 'https://v.ftcdn.net/03/26/51/11/700_F_326511157_YVVObGmUQZ2zUk3s4Sz0lrXoQJDeoqZC_ST.mp4',
-    'S': 'https://v.ftcdn.net/02/56/50/75/700_F_256507583_dQRAmGF93QofGJjx0SDCHX5rY8P1Rutv_ST.mp4',
-    'T': 'https://v.ftcdn.net/02/56/50/87/700_F_256508727_s7IeWZPSNyTZe7EznZhEjjjbbaPQPqt7_ST.mp4',
-    'U': 'https://v.ftcdn.net/02/56/50/98/700_F_256509838_W6SXnyXgm3gKEyIER8UOwiNlUqoypYDC_ST.mp4',
-    'V': 'https://v.ftcdn.net/02/56/51/11/700_F_256511113_mDvHFkxAdjN8QmD6CEIV01rDuAoC5Noi_ST.mp4',
-    'W': 'https://v.ftcdn.net/02/56/51/25/700_F_256512526_VB7rl3srYkEQHh8xVvHGy7dLvvMb7pPT_ST.mp4',
-    'X': 'https://v.ftcdn.net/04/51/72/76/700_F_451727694_uPg2poUMu8q0gQo21CiEPKyvsp1VQPoP_ST.mp4',
-    'Y': 'https://v.ftcdn.net/03/72/12/97/700_F_372129723_UZuWwfDdj51lrodvl6yfKwt4lamYRrPm_ST.mp4',
-    'Z': 'https://v.ftcdn.net/02/56/51/55/700_F_256515526_lQsX2PtDlBnZnCxFiILwpeJq1ecTrrkT_ST.mp4',
-};
 // --- End Helper Components ---
 
 
 // --- Main Detection Component ---
 const Detection = () => {
     const location = useLocation();
-  
+
+    // Name: ABEER => processedNameLetters: ['A', 'B', 'E', 'E', 'R']
     const { userName = 'USER', nameLetters = ['A'] } = location.state || {};
     const processedNameLetters = userName.toUpperCase().split('');
 
     const [currentLetterIndex, setCurrentLetterIndex] = useState(0);
     const currentLetter = processedNameLetters[currentLetterIndex] ? processedNameLetters[currentLetterIndex].toUpperCase() : 'A';
-    
+
     const [isDetecting, setIsDetecting] = useState(false);
     const [result, setResult] = useState(null); // null | true | false
     const [countdown, setCountdown] = useState(3);
     const [currentScore, setCurrentScore] = useState(0); // Sequence Similarity Score (0-100)
     const [isVectorStoreLoading, setIsVectorStoreLoading] = useState(true);
-    
-    // NEW STATE: Tracks the specific reason for a 'false' result (Timeout or Wrong Sign)
-    const [failureMessage, setFailureMessage] = useState(null); // null | 'TIMEOUT' | 'WRONG_SIGN:X' | 'NO_MATCH' 
+
+    // NEW STATE: Tracks the specific reason for a 'false' result (Wrong Sign or No Match)
+    const [failureMessage, setFailureMessage] = useState(null); // null | 'WRONG_SIGN:X' | 'NO_MATCH' 
+
+    // *** NEW STATE FOR COOL-DOWN TIMER ***
+    const [coolDownTimer, setCoolDownTimer] = useState(0); // 0 means no cool-down, >0 means active timer
 
     const [recordedSigns, setRecordedSigns] = useState([]);
-    
+
+    // --- NEW STATES FOR FIREBASE STORAGE VIDEO ---
+    const [currentVideoUrl, setCurrentVideoUrl] = useState(null);
+    const [isVideoLoading, setIsVideoLoading] = useState(true);
+
+    // ----------------------------------------------------------------------
+    // *** NEW: CACHE FOR STORING VIDEO BLOB URLS (memory-based caching) ***
+    // ----------------------------------------------------------------------
+    const videoCacheRef = useRef({});
+    // State to track if all initial videos have been fetched
+    const [isAllVideosLoaded, setIsAllVideosLoaded] = useState(false);
+
+    // NEW REF: Flag to ensure fetch runs only once on mount
+    const hasFetchedAllVideos = useRef(false);
+
     const navigate = useNavigate();
-    
+
     const webcamContainerRef = useRef(null);
-    const videoRef = useRef(null); 
-    const failTimerRef = useRef(null); // Kept for consistency, but logic removed/changed
-    const isSuccessTransitionRef = useRef(false); 
+    const videoRef = useRef(null);
+    const isSuccessTransitionRef = useRef(false);
 
     // --- Sequence Matching Refs ---
     const sequenceBufferRef = useRef([]); // Stores sampled raw keypoints
     const isProcessingSequenceRef = useRef(false); // Flag to prevent multiple sequence processing
-    
+
     const mediaRecorderRef = useRef(null);
     const recordedChunksRef = useRef([]);
 
     // --- Use MediaPipe Detector Hook ---
     const { isModelLoading, isWebcamError, liveKeypoints, handType, incomingFrameCounter } = useMediaPipeHandDetector(
-        webcamContainerRef, 
+        webcamContainerRef,
         videoRef,
     );
-    
+
     // --- VectorStore Initialization ---
     useEffect(() => {
         const initVectorStore = async () => {
@@ -364,24 +354,146 @@ const Detection = () => {
         initVectorStore();
     }, []);
 
+    // ----------------------------------------------------------------------
+    // *** CORE LOGIC: FETCH ALL UNIQUE VIDEOS ONCE INTO CACHE (Browser Memory) ***
+    // *** CORRECTED: File extension changed from .mp4 to .webm ***
+    // ----------------------------------------------------------------------
+    useEffect(() => {
+        // Prevent running more than once on mount
+        if (hasFetchedAllVideos.current) {
+            return;
+        }
+        // Set the flag immediately after the first check
+        hasFetchedAllVideos.current = true;
+
+        // 1. Get a unique list of all letters in the user's name
+        const uniqueLetters = [...new Set(processedNameLetters)]
+            .filter(letter => 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.includes(letter));
+
+        // In this single-run useEffect, all unique letters are the ones to fetch
+        const lettersToFetch = uniqueLetters;
+
+        if (lettersToFetch.length === 0) {
+            setIsAllVideosLoaded(true);
+            return;
+        }
+
+        const fetchAllVideos = async () => {
+            const fetchPromises = lettersToFetch.map(async (letter) => {
+                try {
+                    // *** CRITICAL CHANGE: UPDATED TO .webm ***
+                    const videoRef = ref(storage, `sign_alphabets/${letter}.webm`);
+                    const url = await getDownloadURL(videoRef);
+
+                    // 2. Fetch the video data itself (using { mode: 'cors' } is essential)
+                    const response = await fetch(url, { mode: 'cors' });
+                    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+
+                    // 3. Convert data to a Blob and create a Blob URL (memory cache)
+                    const blob = await response.blob();
+                    const blobUrl = URL.createObjectURL(blob);
+
+                    // 4. Store the Blob URL in the cache
+                    videoCacheRef.current[letter] = blobUrl;
+                    console.log(`Video for ${letter} cached: ${blobUrl.substring(0, 30)}...`);
+
+                } catch (error) {
+                    // Log an error and mark the letter as unavailable
+                    console.error(`Failed to fetch or cache video for ${letter}:`, error);
+                    videoCacheRef.current[letter] = null; // Store null to prevent attempting playback
+                }
+            });
+
+            await Promise.all(fetchPromises);
+            setIsAllVideosLoaded(true);
+        };
+
+        // Start fetching videos
+        fetchAllVideos();
+
+        // Cleanup: Revoke Blob URLs when the component unmounts
+        return () => {
+            Object.values(videoCacheRef.current).forEach(url => {
+                if (url && url.startsWith('blob:')) {
+                    URL.revokeObjectURL(url);
+                }
+            });
+        };
+        // Empty dependency array ensures this runs exactly once on mount
+    }, [processedNameLetters]);
+
+
+    // ----------------------------------------------------------------------
+    // *** VIDEO DISPLAY LOGIC: PULL FROM CACHE RATHER THAN FETCHING ***
+    // ----------------------------------------------------------------------
+    useEffect(() => {
+        if (!currentLetter || !isAllVideosLoaded) {
+            setCurrentVideoUrl(null);
+            setIsVideoLoading(true);
+            return;
+        }
+
+        // 1. Check the in-memory cache
+        const cachedUrl = videoCacheRef.current[currentLetter];
+
+        if (cachedUrl) {
+            // Instant load from cache
+            setCurrentVideoUrl(cachedUrl);
+            setIsVideoLoading(false);
+        } else if (cachedUrl === null) {
+            // Video was not found during initial fetch
+            setCurrentVideoUrl(null);
+            setIsVideoLoading(false);
+        } else {
+            // Videos are still loading 
+            setIsVideoLoading(true);
+        }
+
+    }, [currentLetter, isAllVideosLoaded]); // Runs when the letter changes OR all initial videos complete loading
+
+    // *** NEW EFFECT: COOL-DOWN TIMER LOGIC (5 seconds) ***
+    useEffect(() => {
+        // Start the cool-down timer only when a detection fails
+        if (result === false) {
+            setCoolDownTimer(5); // Start the 5-second cool-down
+
+            const coolDownInterval = setInterval(() => {
+                setCoolDownTimer(prev => {
+                    if (prev <= 1) {
+                        clearInterval(coolDownInterval);
+                        return 0; // Stop and reset the timer
+                    }
+                    return prev - 1;
+                });
+            }, 1000);
+
+            return () => clearInterval(coolDownInterval);
+        }
+
+        // If detection is successful or result is null/detecting, ensure the timer is cleared
+        if (result !== false) {
+            setCoolDownTimer(0);
+        }
+    }, [result]);
+
     // *** DYNAMICALLY CHOOSE TARGET LABELS BASED ON DETECTED HAND ***
-    const baseLabel = handType ? handType.toUpperCase() : 'RIGHT'; 
-    
+    const baseLabel = handType ? handType.toUpperCase() : 'RIGHT';
+
     // Total variants available for the current sign (used for UI display)
-    const targetVariantsCount = SignVectorStore.vectors.filter(v => 
+    const targetVariantsCount = SignVectorStore.vectors.filter(v =>
         v.label.startsWith(`${baseLabel} ${currentLetter} `)
     ).length;
 
-    
+
     // --- HINT LOGIC (Simplified for Sequence Mode) ---
     const positionalHint = isDetecting && countdown === 0 ? getPositionalHint() : '';
     const shapeHint = isDetecting && countdown === 0 ? getShapeHint(currentScore) : '';
-    const finalHint = currentScore > 0 ? shapeHint : positionalHint; 
+    const finalHint = currentScore > 0 ? shapeHint : positionalHint;
 
     const totalLetters = processedNameLetters.length;
     const progressPercent = ((currentLetterIndex) / totalLetters) * 100;
-  
-    // --- VIDEO RECORDING START/STOP LOGIC (No changes, included for completeness) ---
+
+    // --- VIDEO RECORDING START/STOP LOGIC ---
     useEffect(() => {
         if (isDetecting && countdown === 0) {
             if (videoRef.current && videoRef.current.captureStream && !mediaRecorderRef.current) {
@@ -390,11 +502,11 @@ const Detection = () => {
                     const stream = canvasElement ? canvasElement.captureStream() : videoRef.current.captureStream();
                     recordedChunksRef.current = [];
 
-                    const mimeType = MediaRecorder.isTypeSupported('video/webm; codecs=vp9') 
-                                     ? 'video/webm; codecs=vp9' 
-                                     : MediaRecorder.isTypeSupported('video/webm; codecs=vp8')
-                                     ? 'video/webm; codecs=vp8'
-                                     : 'video/webm';
+                    const mimeType = MediaRecorder.isTypeSupported('video/webm; codecs=vp9')
+                        ? 'video/webm; codecs=vp9'
+                        : MediaRecorder.isTypeSupported('video/webm; codecs=vp8')
+                            ? 'video/webm; codecs=vp8'
+                            : 'video/webm';
 
                     const recorder = new MediaRecorder(stream, { mimeType: mimeType });
                     mediaRecorderRef.current = recorder;
@@ -405,7 +517,7 @@ const Detection = () => {
                         }
                     };
 
-                    recorder.start(100); 
+                    recorder.start(100);
                     // console.log("MediaRecorder started...");
 
                 } catch (error) {
@@ -414,7 +526,7 @@ const Detection = () => {
             }
         } else if (!isDetecting && mediaRecorderRef.current) {
             const recorder = mediaRecorderRef.current;
-            
+
             if (recorder.state === 'recording' || recorder.state === 'paused') {
                 recorder.stop();
                 // console.log("MediaRecorder stopped.");
@@ -423,7 +535,7 @@ const Detection = () => {
                     if (result === true && recordedChunksRef.current.length > 0) {
                         const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
                         const videoUrl = URL.createObjectURL(blob);
-                        
+
                         setRecordedSigns(prev => [
                             ...prev,
                             {
@@ -434,33 +546,28 @@ const Detection = () => {
                             }
                         ]);
                     }
-                    
+
                     mediaRecorderRef.current = null;
                     recordedChunksRef.current = [];
                 };
             } else {
-                 mediaRecorderRef.current = null;
-                 recordedChunksRef.current = [];
+                mediaRecorderRef.current = null;
+                recordedChunksRef.current = [];
             }
         }
     }, [isDetecting, countdown, result, currentLetter, currentScore, baseLabel]);
 
 
-    // 1. Countdown Effect (MAX_ATTEMPT_TIME logic removed, only countdown remains)
+    // 1. Countdown Effect
     useEffect(() => {
-        // Clear any lingering timer from previous runs just in case (though it shouldn't fire now)
-        if (failTimerRef.current) {
-            clearTimeout(failTimerRef.current);
-            failTimerRef.current = null;
-        }
-        
+
         if (!isDetecting || countdown === 0) return;
-        
+
         const timer = setInterval(() => {
             setCountdown(prev => {
                 if (prev <= 1) {
                     clearInterval(timer);
-                    return 0; 
+                    return 0;
                 }
                 return prev - 1;
             });
@@ -468,12 +575,31 @@ const Detection = () => {
 
         return () => {
             clearInterval(timer);
-            // failTimerRef logic removed here
         };
     }, [isDetecting, countdown]);
 
+    // *** Auto-Advance Effect ***
+    useEffect(() => {
+        // Only run if successful AND not the last letter
+        if (result === true && currentLetterIndex < processedNameLetters.length - 1) {
 
-    // 2. --- CORE SEQUENCE SAMPLING & SINGLE MATCH LOGIC EFFECT ---
+            const autoAdvanceTimer = setTimeout(() => {
+                // Auto-advance logic
+                setCurrentLetterIndex(prev => prev + 1);
+                setResult(null);
+                setCurrentScore(0);
+                setFailureMessage(null);
+                setCoolDownTimer(0); // Clear cool-down on success
+                setIsDetecting(true);
+                setCountdown(3);
+            }, AUTO_ADVANCE_DELAY); // 1.5 seconds delay
+
+            return () => clearTimeout(autoAdvanceTimer);
+        }
+    }, [result, currentLetterIndex, processedNameLetters.length]);
+
+
+    // 2. --- CORE SEQUENCE SAMPLING & SINGLE MATCH LOGIC EFFECT (FAST DETECTION) ---
     useEffect(() => {
         if (isModelLoading || isWebcamError || isVectorStoreLoading || !isDetecting || countdown > 0 || !handType) {
             return;
@@ -481,54 +607,55 @@ const Detection = () => {
 
         // Sampling Logic: Only sample every 10th frame
         if (incomingFrameCounter % SAMPLE_RATE === 0) { // <--- CORE SAMPLING CHECK uses SAMPLE_RATE = 10
-            
+
             // Determine keypoints for the frame (21 points or 21 zero placeholders)
-            const keypointsForFrame = liveKeypoints.length === 21 
-                                    ? liveKeypoints 
-                                    : new Array(21).fill(ZERO_KEYPOINT);
-            
+            const keypointsForFrame = liveKeypoints.length === 21
+                ? liveKeypoints
+                : new Array(21).fill(ZERO_KEYPOINT);
+
             // Only push to buffer if we haven't reached the target count
             if (sequenceBufferRef.current.length < TARGET_FRAME_COUNT) { // TARGET_FRAME_COUNT = 7
-                 sequenceBufferRef.current.push(keypointsForFrame);
+                sequenceBufferRef.current.push(keypointsForFrame);
             }
 
             // Sequence Complete: Process and Match
             if (sequenceBufferRef.current.length >= TARGET_FRAME_COUNT && !isProcessingSequenceRef.current) {
                 isProcessingSequenceRef.current = true;
-                
+
                 // 1. Process the sampled frames into the final fixed-length vector (Length 441)
                 const queryVector = processSequenceToVector(sequenceBufferRef.current);
-                
+
                 // 2. Reset the buffer and flag for the next sequence attempt (THIS IS THE ONLY RESET POINT)
                 sequenceBufferRef.current = [];
                 isProcessingSequenceRef.current = false;
-                
+
                 let isSuccessfulMatch = false;
 
                 if (queryVector) {
                     // 3. Find Best Match using Cosine Similarity + Averaged Vectors
-                    const bestMatch = SignVectorStore.findBestMatchAveraged(queryVector); 
+                    const bestMatch = SignVectorStore.findBestMatchAveraged(queryVector);
 
                     if (bestMatch) {
                         const similarityScore = bestMatch.similarity;
                         const scorePercent = Math.round(similarityScore * 100);
                         setCurrentScore(scorePercent);
-                        
+
                         const matchedLetter = bestMatch.label.split(' ')[1];
                         const matchedHand = bestMatch.label.split(' ')[0];
-                        
+
                         const isTargetHand = matchedHand === handType.toUpperCase();
                         const isMatchCorrectLetter = (matchedLetter === currentLetter);
-                        
+
                         // LOGIC: Check for a strong match (>= SIMILARITY_THRESHOLD, which is 0.70)
                         if (isTargetHand && isMatchCorrectLetter && similarityScore >= SIMILARITY_THRESHOLD) {
                             // SUCCESS
                             isSuccessfulMatch = true;
                             isSuccessTransitionRef.current = true;
-                            setIsDetecting(false); 
-                            setResult(true); 
+                            setIsDetecting(false);
+                            setResult(true);
                             setFailureMessage(null); // Clear any previous failure message
-                            
+                            setCoolDownTimer(0); // Ensure cool-down is off
+
                             const clearSuccessFlagTimer = setTimeout(() => {
                                 isSuccessTransitionRef.current = false;
                             }, 1500);
@@ -551,42 +678,52 @@ const Detection = () => {
                         console.log("[Detection] No match found or VectorStore empty.");
                     }
                 } else {
-                     setCurrentScore(0);
-                     setFailureMessage('NO_MATCH');
+                    setCurrentScore(0);
+                    setFailureMessage('NO_MATCH');
                 }
-                
-                // NEW LOGIC: If a successful match was NOT achieved, stop detecting immediately.
+
+                // CRUCIAL: If a successful match was NOT achieved, stop detecting immediately for fast feedback.
                 if (!isSuccessfulMatch) {
-                    setIsDetecting(false); 
+                    setIsDetecting(false);
                     setResult(false);
+                    // The cool-down timer will start via the useEffect hook now.
                 }
             }
         }
-    
+
     }, [liveKeypoints, isDetecting, countdown, handType, incomingFrameCounter, isModelLoading, isWebcamError, isVectorStoreLoading, currentLetter]);
 
 
-    // Main Detection Action (Handles Start, Try Again, and Next Letter clicks)
+    // Main Detection Action (Handles Start, Try Again, and Final Result clicks)
     const handleDetectionAction = () => {
-        // 1. Handle SUCCESS/NEXT button click
-        if (result === true) {
-            if (currentLetterIndex === processedNameLetters.length - 1) {
-                navigate('/result', { state: { recordedSigns: recordedSigns, userName: userName, totalSignsAttempted: processedNameLetters.length } }); 
-                return;
-            }
-            
-            setCurrentLetterIndex(prev => prev + 1);
-            setResult(null); 
-            setCurrentScore(0); 
-            setFailureMessage(null); // Clear failure message
-            
-            setIsDetecting(true);
-            setCountdown(3); 
-            return; 
+        // 1. Handle FINAL SUCCESS button click (Only clickable on the last letter when result is true)
+        if (result === true && currentLetterIndex === processedNameLetters.length - 1) {
+            navigate('/result', { state: { recordedSigns: recordedSigns, userName: userName, totalSignsAttempted: processedNameLetters.length } });
+            return;
         }
 
-        // 2. Handle START/TRY AGAIN click (result is null or false)
-        if (isModelLoading || isDetecting || isWebcamError || isVectorStoreLoading) return;
+        // 2. Prevent clicks if successfully waiting for auto-advance or during cool-down
+        if (result === true && currentLetterIndex < processedNameLetters.length - 1) {
+            // Do nothing, let the auto-advance useEffect handle the transition
+            return;
+        }
+
+        // Prevent clicks if cool-down is active
+        if (coolDownTimer > 0) {
+            return;
+        }
+
+
+        // 3. Handle START/TRY AGAIN click (result is null or false)
+        if (isModelLoading || isDetecting || isWebcamError || isVectorStoreLoading || !isAllVideosLoaded) return;
+
+        // --- NEW CHECK: Wait for videos to load ---
+        if (!isAllVideosLoaded) {
+            // This alert shouldn't be reached if the button is disabled, but serves as a backup.
+            alert('Please wait for all tutorial videos to finish loading.');
+            return;
+        }
+
 
         if (SignVectorStore.vectors.length === 0) {
             alert(`Error: VectorStore is empty. Please ensure data is correctly stored in Firestore.`);
@@ -598,19 +735,14 @@ const Detection = () => {
             return;
         }
 
-        if (result !== null) setResult(null); 
+        if (result !== null) setResult(null);
         setFailureMessage(null); // Clear failure message
-        
-        if (failTimerRef.current) {
-            clearTimeout(failTimerRef.current);
-            failTimerRef.current = null;
-        }
-        
+
         // Reset sequence state
         sequenceBufferRef.current = [];
         isProcessingSequenceRef.current = false;
 
-        setIsDetecting(true); 
+        setIsDetecting(true);
         setCountdown(3);
     };
 
@@ -620,31 +752,42 @@ const Detection = () => {
             return <><FiVideoOff className='mr-2' /> CAMERA BLOCKED! Enable & Refresh</>;
         }
         if (isModelLoading || isVectorStoreLoading) {
-            return <><FiZap className='mr-2 animate-spin' /> Loading Hand Tracker/Vector Store...</>;
+            return <><FiZap className='mr-2 animate-spin' /> Loading Sign Recognition AI Agent...</>;
         }
+        if (!isAllVideosLoaded) {
+            return <><FiZap className='mr-2 animate-spin' /> Loading All Tutorial Videos...</>;
+        }
+
+        // *** NEW: Cool-down active check (highest priority failure state) ***
+        if (coolDownTimer > 0) {
+            return <><FiRefreshCcw className='mr-2' /> TRY AGAIN IN {coolDownTimer}</>;
+        }
+
         if (isDetecting) {
             if (countdown > 0) {
-                 return `GET READY! (${countdown})`;
+                return `GET READY! (${countdown})`;
             }
             if (targetVariantsCount === 0) {
                 return `ERROR: Data for ${baseLabel} ${currentLetter} NOT FOUND!`;
             }
-            return `SIGN ${currentLetter} NOW! ANALYZING SEQUENCE...`;
+            // Message moved to the top banner
+            return `SIGN ${currentLetter} NOW! DETECTING...`;
         } else if (result === true) {
             if (currentLetterIndex === processedNameLetters.length - 1) {
                 return <><FiCheckCircle className='mr-2' /> DONE! See Final Results</>;
             }
-            return <><FiCheckCircle className='mr-2' /> PERFECT! Next Letter!</>;
+            // New text for auto-advance
+            return <><FiCheckCircle className='mr-2' /> PERFECT! Auto-Advancing...</>;
         } else if (result === false) {
-            // NEW LOGIC: Differentiate between Timeout/No Match and Wrong Sign
+            // Differentiate between Wrong Sign and No Match (Only hit if coolDownTimer is 0)
             if (failureMessage && failureMessage.startsWith('WRONG_SIGN')) {
                 const wrongLetter = failureMessage.split(':')[1];
-                return <><FiXCircle className='mr-2' /> WRONG SIGN! You signed {wrongLetter}. Try Again.</>;
+                return <><FiXCircle className='mr-2' />  Try Again.</>;
             }
-             // Covers NO_MATCH and old TIMEOUT (which is now just NO_MATCH after first sequence)
+            // Covers NO_MATCH 
             return <><FiRefreshCcw className='mr-2' /> No Match Found! Try Again.</>;
-        } 
-        return <><FiZap className='mr-2' /> Start BOLO Sequence Check</>;
+        }
+        return <><FiZap className='mr-2' />Start signing!</>;
     };
 
     const getHeaderColor = (r) => {
@@ -653,19 +796,26 @@ const Detection = () => {
         return 'bg-gray-800';
     };
 
+    // The button should be disabled if detection is running, or if successful and auto-advancing, OR if coolDownTimer > 0
+    const isButtonDisabled = isDetecting || isModelLoading || isWebcamError || isVectorStoreLoading || !isAllVideosLoaded || coolDownTimer > 0 || (result === true && currentLetterIndex < processedNameLetters.length - 1);
+
+    // Calculate progress for the new progress bar
+    const currentFramesCollected = sequenceBufferRef.current.length;
+    const progressPercentForLoader = Math.round((currentFramesCollected / TARGET_FRAME_COUNT) * 100);
+
 
     return (
         <div className="min-h-screen bg-gradient-to-br from-pink-500 to-teal-500 flex flex-col overflow-hidden relative border-8 border-gray-800">
             <Navbar />
-            
+
             {/* Animated Decor Elements */}
             <WiggleStar key="star-tl" size="5xl" position="top-10 left-10" />
             <WiggleStar key="star-br" size="4xl" position="bottom-10 right-10" />
 
             <div className="flex-1 flex flex-col p-4 md:p-8 max-w-7xl mx-auto w-full relative z-10">
-                
+
                 {/* Progress Bar */}
-                <motion.div 
+                <motion.div
                     className="mb-8 p-4 border-4 border-gray-800 rounded-xl bg-white/90 shadow-[6px_6px_0px_#1f2937]"
                     initial={{ y: -50, opacity: 0 }}
                     animate={{ y: 0, opacity: 1 }}
@@ -676,10 +826,10 @@ const Detection = () => {
                         <span>{Math.round(progressPercent)}% COMPLETE</span>
                     </div>
                     <div className="w-full bg-gray-200 rounded-full h-6 border-2 border-gray-800 overflow-hidden">
-                        <motion.div 
+                        <motion.div
                             className="h-full bg-gradient-to-r from-yellow-400 via-pink-500 to-teal-500"
                             initial={{ width: '0%' }}
-                            animate={{ 
+                            animate={{
                                 width: `${progressPercent}%`
                             }}
                             transition={{ duration: 1, ease: 'easeInOut' }}
@@ -690,7 +840,7 @@ const Detection = () => {
                 {/* --- DUAL CARD LAYOUT (ENLARGED) --- */}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 flex-1">
                     {/* Left Side - Video Tutorial */}
-                    <motion.div 
+                    <motion.div
                         className="bg-white rounded-3xl shadow-xl border-4 border-gray-800 overflow-hidden lg:col-span-1"
                         initial={{ x: -100, rotate: -5, opacity: 0 }}
                         animate={{ x: 0, rotate: 0, opacity: 1 }}
@@ -700,33 +850,50 @@ const Detection = () => {
                         <div className={`${getHeaderColor(result)} p-4 border-b-4 border-gray-800`}>
                             <h2 className="text-2xl font-black text-white filter drop-shadow">WATCH: Letter {currentLetter}</h2>
                         </div>
-                        
-                        <div className="aspect-video bg-gray-900 flex items-center justify-center">
-                            <video 
-                                key={currentLetter} 
-                                src={signVideos[currentLetter] || signVideos['A']} 
-                                autoPlay 
-                                loop 
-                                muted 
-                                className="w-full h-full object-contain bg-black"
-                                playsInline
-                            />
+
+                        {/* --- DYNAMIC VIDEO DISPLAY (NOW PULLS FROM CACHE) --- */}
+                        <div className="aspect-video bg-gray-900 flex items-center justify-center overflow-hidden">
+                            {(isVideoLoading || !isAllVideosLoaded) && (
+                                <div className="text-white text-xl p-4 animate-pulse">Loading All Videos...</div>
+                            )}
+                            {(!isVideoLoading && isAllVideosLoaded && !currentVideoUrl) && (
+                                <div className="text-pink-400 text-xl p-4 text-center">
+                                    Video Not Found for {currentLetter}<br />(Check Firebase Storage: sign_alphabets/{currentLetter}.webm)
+                                </div>
+                            )}
+                            {(!isVideoLoading && isAllVideosLoaded && currentVideoUrl) && (
+                                <video
+                                    key={currentLetter}
+                                    src={currentVideoUrl} // This is now a Blob URL from memory
+                                    autoPlay
+                                    loop
+                                    muted
+                                    // *** COMMIT: VIDEO ZOOM/CROP STYLE START ***
+                                    // We use object-contain and then scale to zoom in, cropping edges but preserving ratio.
+                                    className="w-full h-full object-contain bg-black"
+                                    style={{ transform: 'scale(1.00)' }} // Adjust the '1.15' value to control zoom (1.0 is no zoom, 1.2 is 20% zoom)
+                                    // *** COMMIT: VIDEO ZOOM/CROP STYLE END ***
+                                    playsInline
+                                    crossOrigin="anonymous"
+                                />
+                            )}
                         </div>
-                        
+                        {/* --- END DYNAMIC VIDEO DISPLAY --- */}
+
                         <div className="p-6">
                             <div className="bg-yellow-100 p-4 rounded-xl border-2 border-gray-800">
                                 <p className="text-lg font-black text-gray-800">BOLO TIP:</p>
                                 <ul className="text-base text-gray-700 list-disc pl-5 mt-1">
                                     <li>Keep your wrist firm!</li>
                                     <li>Match the sequence consistently over the capture time!</li>
-                                    <li>Target: <span className="font-bold text-pink-500">{baseLabel} {currentLetter} (Matching against {targetVariantsCount} variants)</span></li>
+                                    {/* <li>Target: <span className="font-bold text-pink-500">{baseLabel} {currentLetter} (Matching against {targetVariantsCount} variants)</span></li> */}
                                 </ul>
                             </div>
                         </div>
                     </motion.div>
-                    
+
                     {/* Right Side - Webcam / Detection Panel */}
-                    <motion.div 
+                    <motion.div
                         className="bg-white rounded-3xl shadow-xl border-4 border-gray-800 flex flex-col overflow-hidden lg:col-span-1"
                         initial={{ x: 100, rotate: 5, opacity: 0 }}
                         animate={{ x: 0, rotate: 0, opacity: 1 }}
@@ -736,39 +903,49 @@ const Detection = () => {
                         <div className={`${getHeaderColor(result)} p-4 border-b-4 border-gray-800`}>
                             <h2 className="text-2xl font-black text-white filter drop-shadow">YOUR TURN: Sign {currentLetter}</h2>
                         </div>
-                        
+
                         {/* Webcam/Canvas Display Area */}
                         <div className="flex-1 bg-gray-900 flex items-center justify-center relative aspect-video overflow-hidden">
-                            <video 
-                                ref={videoRef} 
-                                style={{ position: 'absolute', width: VIDEO_WIDTH, height: VIDEO_HEIGHT, transform: 'scaleX(-1)' }} 
-                                autoPlay 
-                                playsInline 
-                                muted 
+                            <video
+                                ref={videoRef}
+                                // Make the video element technically present but visually hidden
+                                style={{
+                                    position: 'absolute',
+                                    width: VIDEO_WIDTH,
+                                    height: VIDEO_HEIGHT,
+                                    transform: 'scaleX(-1)',
+                                    opacity: 0,
+                                    pointerEvents: 'none' // Ensures it can't be clicked
+                                }}
+                                autoPlay
+                                playsInline
+                                muted
                                 width={VIDEO_WIDTH}
                                 height={VIDEO_HEIGHT}
                             />
-                            
-                            <div 
-                                ref={webcamContainerRef} 
-                                className="w-full h-full flex items-center justify-center bg-gray-800 absolute inset-0"
+
+                            <div
+                                ref={webcamContainerRef}
+                                className="w-full h-full flex items-center justify-center bg-gray-800 absolute inset-0 z-10"
                             >
                                 {/* MediaPipe Canvas is appended here by the hook */}
                             </div>
-                            
+
                             <AnimatePresence>
                                 {/* Loading State */}
-                                {(isModelLoading || isVectorStoreLoading) && !isWebcamError && (
+                                {(isModelLoading || isVectorStoreLoading || !isAllVideosLoaded) && !isWebcamError && (
                                     <motion.div
                                         key="loading"
-                                        className="absolute inset-0 flex items-center justify-center bg-gray-900 z-10"
+                                        className="absolute inset-0 flex items-center justify-center bg-gray-900 z-30"
                                         initial={{ opacity: 0 }}
                                         animate={{ opacity: 1 }}
                                         exit={{ opacity: 0 }}
                                     >
                                         <div className="text-center">
                                             <div className="text-6xl mb-4 text-white animate-pulse">📡</div>
-                                            <p className="text-white text-xl font-bold">Loading Hand Tracker/Vector Store...</p>
+                                            <p className="text-white text-xl font-bold">
+                                                {isModelLoading || isVectorStoreLoading ? 'Loading Sign Recognition AI Agent...' : 'Loading Tutorial Videos...'}
+                                            </p>
                                         </div>
                                     </motion.div>
                                 )}
@@ -787,8 +964,8 @@ const Detection = () => {
                                     </motion.div>
                                 )}
 
-                                {/* Feedback Banner */}
-                                {(!isModelLoading && !isWebcamError && !isVectorStoreLoading) && (isDetecting || result !== null) && (
+                                {/* Feedback Banner (Non-Distracting Progress) */}
+                                {(!isModelLoading && !isWebcamError && !isVectorStoreLoading && isAllVideosLoaded) && (isDetecting || result !== null) && (
                                     <motion.div
                                         key="minimal-feedback"
                                         className="absolute top-0 inset-x-0 p-3 z-30 bg-gray-800/90 border-b-4 border-gray-800"
@@ -803,10 +980,22 @@ const Detection = () => {
                                                     GET READY: {countdown}
                                                 </p>
                                             )}
+                                            {/* *** UPDATED ANALYZING/HOLD SIGN SECTION WITH PROGRESS BAR *** */}
                                             {isDetecting && countdown === 0 && (
-                                                <p className="text-3xl font-black text-pink-400 animate-pulse">
-                                                    ANALYZING SEQUENCE... {sequenceBufferRef.current.length}/{TARGET_FRAME_COUNT}
-                                                </p>
+                                                <div className="flex flex-col items-center px-4">
+                                                    <p className="text-3xl font-black text-yellow-400 animate-pulse mb-2">
+                                                        HOLD SIGN! ANALYZING...
+                                                    </p>
+                                                    {/* Simple Progress Bar */}
+                                                    <div className="w-full h-2 bg-gray-600 rounded-full overflow-hidden border border-gray-500">
+                                                        <motion.div
+                                                            className="h-full bg-pink-500 rounded-full"
+                                                            initial={{ width: '0%' }}
+                                                            animate={{ width: `${progressPercentForLoader}%` }}
+                                                            transition={{ duration: 0.2, ease: "linear" }}
+                                                        />
+                                                    </div>
+                                                </div>
                                             )}
                                             {result === true && (
                                                 <p className="text-3xl font-black text-teal-400">
@@ -815,10 +1004,12 @@ const Detection = () => {
                                             )}
                                             {result === false && (
                                                 <p className="text-3xl font-black text-pink-400">
-                                                    <FiXCircle className='inline mr-2' /> 
-                                                    {failureMessage && failureMessage.startsWith('WRONG_SIGN') ? 
-                                                        `WRONG SIGN! (Matched ${failureMessage.split(':')[1]})` : 
-                                                        'NO MATCH FOUND!'}
+                                                    <FiXCircle className='inline mr-2' />
+                                                    {coolDownTimer > 0 ? (
+                                                        `TRY AGAIN IN ${coolDownTimer}!`
+                                                    ) : failureMessage && failureMessage.startsWith('WRONG_SIGN') ?
+                                                        `WRONG SIGN!` :
+                                                        'WRONG SIGN!'}
                                                 </p>
                                             )}
                                         </div>
@@ -826,21 +1017,19 @@ const Detection = () => {
                                 )}
                             </AnimatePresence>
 
-                            {/* Real-time score and hint display - THIS BLOCK HAS BEEN REMOVED */}
-                            
                         </div>
-                        
+
                         <div className="p-6">
                             <AnimatedButton
                                 onClick={handleDetectionAction}
-                                disabled={isDetecting || isModelLoading || isWebcamError || isVectorStoreLoading || (liveKeypoints.length === 0 && result === false && failureMessage === 'TIMEOUT')}
+                                disabled={isButtonDisabled} // Use the new disabled state
                                 result={result}
                                 className="w-full py-4 text-2xl font-black"
                             >
                                 {getButtonText()}
                             </AnimatedButton>
-                            
-                            <div 
+
+                            <div
                                 className="mt-4 flex items-center justify-between text-base text-gray-800 font-bold"
                             >
                                 <span>Practicing: {userName}</span>
@@ -848,18 +1037,18 @@ const Detection = () => {
                             </div>
                         </div>
                     </motion.div>
-                    
+
                 </div>
-                
+
                 {/* Floating hand animation */}
-                <motion.div 
+                <motion.div
                     className="fixed bottom-4 right-4 text-6xl z-10 filter drop-shadow-lg"
-                    animate={{ 
+                    animate={{
                         rotate: [0, 10, -10, 10, 0],
                         y: [0, -20, 20, -20, 0]
                     }}
-                    transition={{ 
-                        repeat: Infinity, 
+                    transition={{
+                        repeat: Infinity,
                         duration: 4,
                         ease: 'easeInOut'
                     }}

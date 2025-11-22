@@ -20,7 +20,8 @@ import {
 import Confetti from "react-confetti";
 import { useWindowSize } from "react-use";
 import emailjs from "@emailjs/browser";
-import { storage } from "../firebase";
+import { db, storage } from "../firebase"; // <--- MODIFIED: Import db (Firestore)
+import { doc, setDoc } from "firebase/firestore"; // <--- ADDED: Import Firestore functions
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { FFmpeg } from "@ffmpeg/ffmpeg";
 import { fetchFile, toBlobURL } from "@ffmpeg/util";
@@ -50,16 +51,22 @@ const Result = () => {
   const [isMerging, setIsMerging] = useState(false);
   const [ffmpegLoaded, setFfmpegLoaded] = useState(false);
   const ffmpegRef = useRef(new FFmpeg());
+  
+  // --- STATS & UTILS ---
+  const totalScore = recordedSigns.reduce((sum, sign) => sum + sign.score, 0);
+  const totalSignsMastered = recordedSigns.length;
+  const averageScore =
+    totalSignsMastered > 0 ? Math.round(totalScore / totalSignsMastered) : 0;
+  // --- END STATS & UTILS ---
 
   const currentSign =
     recordedSigns.length > 0 ? recordedSigns[currentReplayIndex] : null;
-  const totalSignsMastered = recordedSigns.length;
 
   const loadFfmpeg = async () => {
     const ffmpeg = ffmpegRef.current;
 
     ffmpeg.on("log", ({ message }) => {
-      console.log("FFmpeg Log:", message);
+      // console.log("FFmpeg Log:", message); // Commented out to reduce noise
     });
 
     if (ffmpeg.loaded) {
@@ -83,10 +90,6 @@ const Result = () => {
       setFfmpegLoaded(true);
     } catch (error) {
       console.error("FFmpeg Load Error:", error);
-      // Sometimes logging the full error object helps
-      if (error.message && error.message.includes("SharedArrayBuffer")) {
-        console.error("This error is due to missing headers in vite.config.js");
-      }
     }
   };
 
@@ -106,36 +109,24 @@ const Result = () => {
 
     try {
       // 1. Write all video clips to FFmpeg's virtual file system
-      // We use a loop to fetch the blob data from the objectURL and write it
       const fileNames = [];
       for (let i = 0; i < recordedSigns.length; i++) {
-        const fileName = `input${i}.webm`; // Assuming webm from MediaRecorder
+        const fileName = `input${i}.webm`;
         const sign = recordedSigns[i];
-
-        // Fetch the data from the blob URL
         await ffmpeg.writeFile(fileName, await fetchFile(sign.videoUrl));
         fileNames.push(fileName);
       }
 
-      // 2. Create a text file list for the concat demuxer
-      // Format: file 'filename.webm'
+      // 2. Create a text file list
       const listContent = fileNames.map((name) => `file '${name}'`).join("\n");
       await ffmpeg.writeFile("list.txt", listContent);
 
       // 3. Run the concat command
-      // -f concat: use concat demuxer
-      // -safe 0: allow unsafe file paths (needed for virtual fs)
-      // -i list.txt: input list
-      // -c copy: copy stream (fast, no re-encoding)
       await ffmpeg.exec([
-        "-f",
-        "concat",
-        "-safe",
-        "0",
-        "-i",
-        "list.txt",
-        "-c",
-        "copy",
+        "-f", "concat",
+        "-safe", "0",
+        "-i", "list.txt",
+        "-c", "copy",
         "output.webm",
       ]);
 
@@ -157,16 +148,14 @@ const Result = () => {
 
       // Cleanup
       URL.revokeObjectURL(url);
-
-      // Optional: Delete files from memory to free up space
       await ffmpeg.deleteFile("output.webm");
       await ffmpeg.deleteFile("list.txt");
       for (const name of fileNames) {
         await ffmpeg.deleteFile(name);
       }
     } catch (error) {
-      console.error("Error merging videos:", error);
-      alert("Could not merge videos. Please try again.");
+      console.error("Error merging videos for download:", error);
+      alert("Could not merge videos for download. Please try again.");
     } finally {
       setIsMerging(false);
     }
@@ -200,60 +189,68 @@ const Result = () => {
       await ffmpeg.writeFile("list.txt", listContent);
 
       await ffmpeg.exec([
-        "-f",
-        "concat",
-        "-safe",
-        "0",
-        "-i",
-        "list.txt",
-        "-c",
-        "copy",
+        "-f", "concat",
+        "-safe", "0",
+        "-i", "list.txt",
+        "-c", "copy",
         "output.webm",
       ]);
 
       const data = await ffmpeg.readFile("output.webm");
       const videoBlob = new Blob([data.buffer], { type: "video/webm" });
+      
+      // Generate thumbnail
       await ffmpeg.exec([
-        "-i",
-        "output.webm",
-        "-ss",
-        "00:00:01",
-        "-frames:v",
-        "1",
+        "-i", "output.webm",
+        "-ss", "00:00:01",
+        "-frames:v", "1",
         "thumbnail.jpg",
       ]);
       const thumbData = await ffmpeg.readFile("thumbnail.jpg");
       const thumbBlob = new Blob([thumbData.buffer], { type: "image/jpeg" });
+      
       // Clean up FFmpeg memory
       await ffmpeg.deleteFile("output.webm");
-      await ffmpeg.deleteFile("thumbnail.jpg"); // Delete thumb
+      await ffmpeg.deleteFile("thumbnail.jpg");
       await ffmpeg.deleteFile("list.txt");
       for (const name of fileNames) await ffmpeg.deleteFile(name);
 
-      // --- STEP B: UPLOAD TO FIREBASE ---
+      console.log("DEBUG: FFmpeg Merge Complete. Starting Upload.");
+
+      // --- STEP B: UPLOAD TO FIREBASE STORAGE ---
       setProcessStatus("uploading");
 
-      const uniqueId = `${Date.now()}_${Math.random()
-        .toString(36)
-        .substr(2, 9)}`;
-      const videoRef = ref(
-        storage,
-        `bolo_performances/${userName}_${uniqueId}.webm`
-      );
-
+      const uniqueId = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const videoRef = ref(storage, `bolo_performances/${userName}_${uniqueId}.webm`);
       await uploadBytes(videoRef, videoBlob);
       const downloadURL = await getDownloadURL(videoRef);
-      console.log("File available at", downloadURL);
 
-      const thumbRef = ref(
-        storage,
-        `bolo_performances/${userName}_${uniqueId}.jpg`
-      );
+      const thumbRef = ref(storage, `bolo_performances/${userName}_${uniqueId}.jpg`);
       await uploadBytes(thumbRef, thumbBlob);
       const thumbURL = await getDownloadURL(thumbRef);
-      // --- STEP C: SEND EMAIL ---
-      setProcessStatus("sending_email");
-      // REPLACE THESE WITH YOUR EMAILJS CREDENTIALS
+      
+      console.log("DEBUG: Storage Upload Complete. Video URL:", downloadURL);
+
+      // --- STEP C: SAVE EMAIL AND DATA TO FIRESTORE (DB) --- <--- NEW STEP
+      console.log("DEBUG: Attempting Firestore Write to 'user_emails' collection.");
+      setProcessStatus("sending_email"); 
+      
+      const emailDocRef = doc(db, "user_emails", email.toLowerCase()); 
+      const userData = {
+          email: email.toLowerCase(),
+          userName: userName,
+          videoURL: downloadURL,
+          thumbnailURL: thumbURL,
+          submissionDate: new Date().toISOString(),
+          totalSignsMastered: recordedSigns.length,
+          averageScore: averageScore, 
+      };
+      
+      await setDoc(emailDocRef, userData, { merge: true }); 
+
+      console.log("SUCCESS: Firestore Write Complete. Document should exist in 'user_emails'.");
+      
+      // --- STEP D: SEND EMAIL --- 
       const SERVICE_ID = "service_3sl5dqc";
       const TEMPLATE_ID = "template_ujom2df";
       const PUBLIC_KEY = "6YNMQAWD1xol84C-9";
@@ -262,10 +259,8 @@ const Result = () => {
         user_name: userName,
         email: email,
         name: userName,
-
         video_link: downloadURL,
         thumbnail_link: thumbURL,
-
         bolo_link: "https://bolo.connecthear.org",
         instagram_link: "https://www.instagram.com/connecthear",
         linkedin_link: "https://www.linkedin.com/in/arhumishtiaq",
@@ -273,17 +268,26 @@ const Result = () => {
       };
 
       await emailjs.send(SERVICE_ID, TEMPLATE_ID, templateParams, PUBLIC_KEY);
+      
+      console.log("SUCCESS: Email Send Complete.");
 
       setProcessStatus("success");
       // Reset status after a delay
       setTimeout(() => {
         setProcessStatus("idle");
       }, 5000);
+      
     } catch (error) {
-      console.error("Workflow Error:", error);
+      console.error("CRITICAL WORKFLOW ERROR:", error);
+      console.error("ERROR MESSAGE:", error.message);
+      // This will help you see if the error is from FFmpeg, Storage, Firestore, or EmailJS
       setProcessStatus("error");
+      alert(`An error occurred during the process: ${error.message}. Check the browser console for the 'CRITICAL WORKFLOW ERROR' details.`);
     }
   };
+  
+  // ... (rest of the useEffects and component logic) ...
+
   useEffect(() => {
     return () => {
       recordedSigns.forEach((sign) => {
@@ -321,9 +325,6 @@ const Result = () => {
   }, [totalSignsMastered, isPlaying, handleNextReplay, currentReplayIndex]);
 
   // --- STATS & UTILS ---
-  const totalScore = recordedSigns.reduce((sum, sign) => sum + sign.score, 0);
-  const averageScore =
-    totalSignsMastered > 0 ? Math.round(totalScore / totalSignsMastered) : 0;
   const masteryRatio = `${totalSignsMastered}/${totalSignsAttempted}`;
 
   const statItems = [
@@ -398,7 +399,29 @@ const Result = () => {
       <WiggleStar size="3xl" position="top-10 right-1/4" />
       <WiggleStar size="2xl" position="bottom-10 left-10" />
 
-      <Navbar />
+               <div className="flex justify-center items-center my-6 md:my-10">
+                <div className="flex items-center gap-3">
+
+                    {/* BOLO */}
+                    <span className="google-sans text-white text-3xl md:text-5xl font-black leading-none">
+                        BOLO
+                    </span>
+
+                    {/* BY */}
+                    <span className="google-sans text-white text-base md:text-lg font-semibold leading-none">
+                        by
+                    </span>
+
+                    {/* Logo */}
+                    <img
+                        src="/logo/CH White Logo.png"
+                        alt="Connect Hear"
+                        className="h-5 md:h-8 w-auto object-contain leading-none"
+                    />
+
+                </div>
+            </div>
+
 
       <div className="flex-1 flex flex-col items-center p-4 relative z-30 overflow-y-auto">
         <motion.div

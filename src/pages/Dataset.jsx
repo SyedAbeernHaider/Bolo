@@ -53,8 +53,6 @@ const flattenKeypoints = (normalizedFrames) => {
 };
 
 // --- NEW HELPER FUNCTION: Mirrors the normalized 1D vector (simulates other hand) ---
-// Since coordinates are relative to the wrist (P0) at (0,0,0), mirroring across 
-// the vertical plane only requires negating the X (horizontal) and Z (depth) coordinates.
 const mirrorVector = (sourceVector) => {
     // Check if it's the expected length
     if (sourceVector.length !== VECTOR_LENGTH) {
@@ -77,12 +75,39 @@ const mirrorVector = (sourceVector) => {
     return mirrored;
 };
 
+// --- CUSTOM SORT FUNCTION for RIGHT/LEFT Hand Tables (Letter -> Version) ---
+const customSortByLetterAndVersion = (a, b) => {
+    const partsA = a.label.split(' ');
+    const partsB = b.label.split(' ');
+
+    const letterA = partsA[1];
+    const letterB = partsB[1];
+    const versionA = partsA[2];
+    const versionB = partsB[2];
+
+    // 1. Compare Letter/Sign
+    if (letterA < letterB) return -1;
+    if (letterA > letterB) return 1;
+
+    // 2. If Letter is the same, compare Version (Numeric then AVERAGE)
+    const numVersionA = versionA === AVERAGE_VERSION_IDENTIFIER ? Infinity : parseInt(versionA, 10);
+    const numVersionB = versionB === AVERAGE_VERSION_IDENTIFIER ? Infinity : parseInt(versionB, 10);
+    
+    if (numVersionA < numVersionB) return -1;
+    if (numVersionA > numVersionB) return 1;
+
+    return 0; // Entries are the same
+};
+// --------------------------------------------------------
+
 
 const Dataset = () => {
   // 1. Refs for DOM elements and MediaPipe instance
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const handsRef = useRef(null);
+  
+  // SCROLL REFS REMOVED
 
   // 1b. Refs for Capture Control
   const isCapturingRef = useRef(false);
@@ -111,6 +136,11 @@ const Dataset = () => {
   const [captureProgress, setCaptureProgress] = useState(0); 
   const [isProcessing, setIsProcessing] = useState(false); 
 
+  // --- NEW STATE for Bulk Mirroring ---
+  const [selectedMirrorEntries, setSelectedMirrorEntries] = useState([]);
+  // -----------------------------------
+
+  // SCROLL LOGIC REMOVED
 
   // --- Helper to get initial total count from Firestore ---
   const fetchTotalEntries = async () => {
@@ -123,7 +153,7 @@ const Dataset = () => {
               ...doc.data()
           }));
           
-          setDataEntries(entries); // Store the full list
+          setDataEntries(entries); // Store the full list (triggers re-render)
           setTotalEntries(entries.length); 
           return entries;
       } catch (error) {
@@ -230,7 +260,7 @@ const Dataset = () => {
       }
   };
   
-  // --- NEW: Handles mirroring and saving a vector for the opposite hand ---
+  // --- Handles mirroring and saving a vector for the opposite hand (used by single mirror button and bulk) ---
   const handleMirrorEntry = async (entry) => {
       const parts = entry.label.split(' ');
       const sourceHand = parts[0];
@@ -240,18 +270,11 @@ const Dataset = () => {
       const targetHand = sourceHand === 'RIGHT' ? 'LEFT' : 'RIGHT';
       const targetLabel = `${targetHand} ${letter} ${version}`;
 
-      if (!window.confirm(`Generate mirrored vector for '${entry.label}' as '${targetLabel}'?`)) {
-          return;
-      }
-      
-      setStatus(`Generating mirrored vector for ${entry.label}...`);
-
-      // 1. Check for existence to prevent duplication
+      // 1. Check for existence (local check)
       const exists = dataEntries.some(e => e.label === targetLabel);
       if (exists) {
-          alert(`Error: The mirrored vector '${targetLabel}' already exists. Please delete the existing one first.`);
-          setStatus(`Ready.`);
-          return;
+          console.warn(`Mirroring skipped for '${entry.label}': Mirrored vector '${targetLabel}' already exists.`);
+          return { success: false, label: entry.label, message: 'Already exists' };
       }
 
       // 2. Apply the mirroring transformation
@@ -266,17 +289,61 @@ const Dataset = () => {
               timestamp: new Date().toISOString()
           };
           await addDoc(collection(db, COLLECTION_NAME), newEntry);
-
-          // 4. Update display data
-          const updatedEntries = await fetchTotalEntries(); 
-          
-          setStatus(`SUCCESS! Mirrored VECTOR for sign '${targetLabel}' saved to Firestore. Total entries: ${updatedEntries.length}.`);
+          return { success: true, label: entry.label };
           
       } catch (error) {
-          setStatus(`ERROR: Failed to save mirrored vector to Firestore. Check console.`);
-          console.error("Firestore Save Error:", error);
+          console.error("Firestore Save Error during mirror:", error);
+          return { success: false, label: entry.label, message: 'Firestore error' };
       }
   };
+
+  // --- NEW: Toggle Checkbox Selection for Mirroring (Simplified)---
+  const toggleMirrorSelection = (id) => {
+    setSelectedMirrorEntries(prev => 
+        prev.includes(id) 
+            ? prev.filter(entryId => entryId !== id) 
+            : [...prev, id]
+    );
+  };
+
+  // --- NEW: Bulk Mirror Selected Entries ---
+  const handleMirrorSelected = async () => {
+    if (selectedMirrorEntries.length === 0) {
+        alert('Please select at least one entry to mirror.');
+        return;
+    }
+
+    if (!window.confirm(`Are you sure you want to bulk-mirror ${selectedMirrorEntries.length} selected entries?`)) {
+        return;
+    }
+
+    setIsProcessing(true);
+    setStatus(`Starting bulk mirror operation for ${selectedMirrorEntries.length} entries...`);
+    
+    let mirrorCount = 0;
+    const selectedEntriesData = dataEntries.filter(e => selectedMirrorEntries.includes(e.id));
+
+    // Wait for all mirror operations to complete
+    const mirrorPromises = selectedEntriesData.map(entry => handleMirrorEntry(entry));
+    const results = await Promise.all(mirrorPromises);
+
+    results.forEach(result => {
+        if (result.success) {
+            mirrorCount++;
+        }
+    });
+
+    // 1. Clear selection
+    setSelectedMirrorEntries([]);
+    
+    // 2. Fetch updated list 
+    const updatedEntries = await fetchTotalEntries(); 
+    
+    setIsProcessing(false);
+    setStatus(`SUCCESS! Bulk mirror complete. ${mirrorCount} new entries saved. Total entries: ${updatedEntries.length}.`);
+  };
+  // ----------------------------------------------------
+
   // 3. MediaPipe & Camera Initialization (Runs once on mount)
   useEffect(() => {
     setStatus('Initializing MediaPipe...');
@@ -325,6 +392,7 @@ const Dataset = () => {
 
   // 4. MediaPipe Results Handler (Runs per frame)
   const onResults = (results) => {
+    // ... (rest of onResults logic remains the same)
     const now = performance.now();
     const deltaTime = now - lastTimeRef.current;
     lastTimeRef.current = now;
@@ -426,6 +494,7 @@ const Dataset = () => {
 
     canvasCtx.restore();
   };
+
 
   // 5. Capture Stop/Processing Handler
   const handleStopCapture = async () => {
@@ -586,13 +655,114 @@ const Dataset = () => {
   useEffect(() => {
     updateNextVersion(currentHand, currentLetter.trim().toUpperCase(), dataEntries);
   }, [currentHand, currentLetter, dataEntries]); 
+  
+  // --- Filter and Sort data for display ---
+  const allEntriesSorted = [...dataEntries].sort(customSortByLetterAndVersion);
+
+  const rightHandEntries = allEntriesSorted.filter(entry => entry.label.startsWith('RIGHT'));
+  const leftHandEntries = allEntriesSorted.filter(entry => entry.label.startsWith('LEFT'));
+  
+  
+  // --- Reusable Table Renderer Component (Finalized for main scroll) ---
+  const RenderDataTable = ({ title, entries, handleDelete, handleMirror, selectedEntries, toggleSelection }) => (
+      <div style={{ flex: 1, minWidth: '550px', marginBottom: '40px' }}>
+          <h4 style={{ textAlign: 'center', marginBottom: '10px' }}>{title} ({entries.length} entries)</h4>
+          {/* No fixed height or overflow - relies on browser scroll */}
+          <div style={{ border: '1px solid #ccc', width: '100%' }}> 
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                  <thead>
+                      <tr style={{ backgroundColor: '#f2f2f2' }}>
+                          <th style={{ padding: '8px', border: '1px solid #ccc', textAlign: 'center', width: '30px', backgroundColor: '#f2f2f2' }}>
+                              <input 
+                                  type="checkbox" 
+                                  onChange={(e) => {
+                                      const ids = entries.map(e => e.id);
+                                      if (e.target.checked) {
+                                          setSelectedMirrorEntries(prev => [...new Set([...prev, ...ids])]);
+                                      } else {
+                                          setSelectedMirrorEntries(prev => prev.filter(id => !ids.includes(id)));
+                                      }
+                                  }}
+                                  checked={entries.length > 0 && entries.every(e => selectedEntries.includes(e.id))}
+                                  disabled={isCapturingRef.current || isProcessing}
+                              />
+                          </th>
+                          <th style={{ padding: '8px', border: '1px solid #ccc', textAlign: 'left', backgroundColor: '#f2f2f2' }}>Label (Vector Size: {VECTOR_LENGTH})</th>
+                          <th style={{ padding: '8px', border: '1px solid #ccc', textAlign: 'center', width: '20%', backgroundColor: '#f2f2f2' }}>Mirror</th>
+                          <th style={{ padding: '8px', border: '1px solid #ccc', textAlign: 'center', width: '20%', backgroundColor: '#f2f2f2' }}>Delete</th>
+                      </tr>
+                  </thead>
+                  <tbody>
+                      {entries.map((entry) => {
+                          const isAverage = entry.label.endsWith(` ${AVERAGE_VERSION_IDENTIFIER}`);
+                          // Determine if the mirrored entry exists (for button disabling and info)
+                          const mirroredHand = entry.label.startsWith('RIGHT') ? 'LEFT' : 'RIGHT';
+                          const originalLabelParts = entry.label.split(' ');
+                          const mirroredLabel = `${mirroredHand} ${originalLabelParts[1]} ${originalLabelParts[2]}`;
+                          const mirroredExists = dataEntries.some(e => e.label === mirroredLabel);
+
+                          return (
+                          <tr key={entry.id} style={{ backgroundColor: isAverage ? '#d4edda' : 'white' }}>
+                              <td style={{ padding: '8px', border: '1px solid #ccc', textAlign: 'center' }}>
+                                  <input 
+                                      type="checkbox" 
+                                      checked={selectedEntries.includes(entry.id)} 
+                                      // Individual toggle logic: now fully functional
+                                      onChange={() => toggleSelection(entry.id)}
+                                      disabled={isCapturingRef.current || isProcessing}
+                                  />
+                              </td>
+                              <td style={{ padding: '8px', border: '1px solid #ccc', fontWeight: isAverage ? 'bold' : 'normal' }}>
+                                  {entry.label}
+                              </td>
+                              <td style={{ padding: '8px', border: '1px solid #ccc', textAlign: 'center' }}>
+                                  {/* Single Mirror button */}
+                                  <button
+                                      onClick={() => {
+                                          if (!window.confirm(`Are you sure you want to mirror only '${entry.label}'?`)) return;
+                                          // Handle mirror and then refresh data
+                                          handleMirrorEntry(entry).then(fetchTotalEntries); 
+                                      }}
+                                      disabled={isCapturingRef.current || isProcessing || mirroredExists}
+                                      title={mirroredExists ? 'Mirrored version already exists' : 'Generate Mirrored Hand Value'}
+                                      style={{ 
+                                          padding: '4px 8px', 
+                                          backgroundColor: mirroredExists ? '#ccc' : '#17a2b8', // Info Blue
+                                          color: 'white', 
+                                          border: 'none', 
+                                          cursor: mirroredExists ? 'not-allowed' : 'pointer', 
+                                          borderRadius: '4px',
+                                          width: '100%'
+                                      }}
+                                  >
+                                      {mirroredExists ? 'Mirrored Exists' : 'Mirror'}
+                                  </button>
+                              </td>
+                              <td style={{ padding: '8px', border: '1px solid #ccc', textAlign: 'center' }}>
+                                  <button
+                                      onClick={() => handleDelete(entry.id, entry.label)}
+                                      disabled={isCapturingRef.current || isProcessing}
+                                      style={{ padding: '4px 8px', backgroundColor: '#dc3545', color: 'white', border: 'none', cursor: 'pointer', borderRadius: '4px', width: '100%' }}
+                                  >
+                                      Delete
+                                  </button>
+                              </td>
+                          </tr>
+                      );})}
+                  </tbody>
+              </table>
+          </div>
+      </div>
+  );
+  // --- END Reusable Table Renderer Component ---
 
   return (
     <div style={{ padding: '20px', fontFamily: 'sans-serif', display: 'flex', flexDirection: 'column', alignItems: 'center', backgroundColor: '#e0f7fa' }}>
       <h1>Sign Language Dataset Creator (Dynamic Sequence Mode)</h1>
       <p>**Goal:** Capture **{TARGET_FRAME_COUNT}** frames over {TARGET_DURATION_MS/1000} seconds. The **frame gap is dynamically adjusted** to maintain a fixed sequence length. Data is saved as a **Fixed-Length 1D Vector ({VECTOR_LENGTH})** to Firestore.</p>
       
-      <div style={{ marginBottom: '15px', padding: '10px', border: '1px solid #000', backgroundColor: '#fff', width: '640px' }}>
+      {/* Increased max-width to 1200px */}
+      <div style={{ marginBottom: '15px', padding: '10px', border: '1px solid #000', backgroundColor: '#fff', maxWidth: '1200px', width: '90%' }}>
           <strong>Status:</strong> {status}
           {isCapturingRef.current && (
              <div style={{ marginTop: '10px', height: '15px', border: '1px solid black', backgroundColor: '#eee' }}>
@@ -629,7 +799,8 @@ const Dataset = () => {
         </div>
       </div>
 
-      <div style={{ maxWidth: '640px', display: 'flex', flexDirection: 'column', gap: '10px', width: '100%' }}>
+      {/* Increased max-width to 1200px */}
+      <div style={{ maxWidth: '1200px', display: 'flex', flexDirection: 'column', gap: '10px', width: '90%' }}>
         
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px' }}>
             <label style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
@@ -704,66 +875,58 @@ const Dataset = () => {
             <p style={{ color: 'blue', fontWeight: 'bold' }}>Average Vector **{AVERAGE_VERSION_IDENTIFIER}** already exists.</p>
         )}
 
-        <h3 style={{ marginTop: '20px' }}>Collected Data Summary (Firestore)</h3>
-        <p>Total Sequence Entries Saved: **{totalEntries}** (Each entry is a {TARGET_FRAME_COUNT} frame sequence vector of length {VECTOR_LENGTH})</p>
+        {/* --- DATA SUMMARY SECTION: STACKED COLUMNS & BULK MIRROR --- */}
+        <h3 style={{ marginTop: '20px', width: '100%', textAlign: 'center' }}>Collected Data Summary (Firestore)</h3>
+        <p style={{ width: '100%', textAlign: 'center' }}>Total Sequence Entries Saved: **{totalEntries}** (Each entry is a {TARGET_FRAME_COUNT} frame sequence vector of length {VECTOR_LENGTH})</p>
         
-        <button 
-            onClick={fetchTotalEntries} 
-            disabled={isCapturingRef.current || isProcessing}
-            style={{ padding: '5px 10px', backgroundColor: '#28a745', color: 'white', border: 'none', cursor: 'pointer', marginBottom: '10px' }}
-        >
-            Refresh Data List ({totalEntries} entries)
-        </button>
-        
-        {/* NEW DATA DISPLAY TABLE */}
-        <div style={{ maxHeight: '400px', overflowY: 'scroll', border: '1px solid #ccc', width: '100%' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
-                <thead>
-                    <tr style={{ backgroundColor: '#f2f2f2' }}>
-                        <th style={{ padding: '8px', border: '1px solid #ccc', textAlign: 'left' }}>Label</th>
-                        <th style={{ padding: '8px', border: '1px solid #ccc', textAlign: 'left' }}>Vector Size</th>
-                        <th style={{ padding: '8px', border: '1px solid #ccc', textAlign: 'left' }}>Mirror Action</th>
-                        <th style={{ padding: '8px', border: '1px solid #ccc', textAlign: 'left' }}>Delete Action</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {dataEntries.sort((a, b) => a.label.localeCompare(b.label)).map((entry) => (
-                        <tr key={entry.id} style={{ backgroundColor: entry.label.endsWith(` ${AVERAGE_VERSION_IDENTIFIER}`) ? '#d4edda' : 'white' }}>
-                            <td style={{ padding: '8px', border: '1px solid #ccc', fontWeight: entry.label.endsWith(` ${AVERAGE_VERSION_IDENTIFIER}`) ? 'bold' : 'normal' }}>
-                                {entry.label}
-                            </td>
-                            <td style={{ padding: '8px', border: '1px solid #ccc' }}>{entry.vectorLength}</td>
-                            <td style={{ padding: '8px', border: '1px solid #ccc' }}>
-                                <button
-                                    onClick={() => handleMirrorEntry(entry)}
-                                    disabled={isCapturingRef.current || isProcessing}
-                                    style={{ 
-                                        padding: '4px 8px', 
-                                        backgroundColor: '#17a2b8', // Info Blue
-                                        color: 'white', 
-                                        border: 'none', 
-                                        cursor: 'pointer', 
-                                        borderRadius: '4px',
-                                        width: '100%'
-                                    }}
-                                >
-                                    Generate Mirrored Hand Value
-                                </button>
-                            </td>
-                            <td style={{ padding: '8px', border: '1px solid #ccc' }}>
-                                <button
-                                    onClick={() => handleDeleteEntry(entry.id, entry.label)}
-                                    disabled={isCapturingRef.current || isProcessing}
-                                    style={{ padding: '4px 8px', backgroundColor: '#dc3545', color: 'white', border: 'none', cursor: 'pointer', borderRadius: '4px', width: '100%' }}
-                                >
-                                    Delete
-                                </button>
-                            </td>
-                        </tr>
-                    ))}
-                </tbody>
-            </table>
+        <div style={{ display: 'flex', gap: '10px', width: '100%', justifyContent: 'center' }}>
+            <button 
+                onClick={() => {
+                    fetchTotalEntries();
+                }}
+                disabled={isCapturingRef.current || isProcessing}
+                style={{ padding: '5px 10px', backgroundColor: '#28a745', color: 'white', border: 'none', cursor: 'pointer' }}
+            >
+                Refresh Data List ({totalEntries} entries)
+            </button>
+            <button 
+                onClick={handleMirrorSelected} 
+                disabled={isCapturingRef.current || isProcessing || selectedMirrorEntries.length === 0}
+                style={{ padding: '5px 10px', backgroundColor: '#0056b3', color: 'white', border: 'none', cursor: selectedMirrorEntries.length === 0 ? 'not-allowed' : 'pointer' }}
+            >
+                Bulk Mirror Selected Entries ({selectedMirrorEntries.length})
+            </button>
+            <button 
+                onClick={() => {
+                    setSelectedMirrorEntries([]);
+                }}
+                disabled={isCapturingRef.current || isProcessing || selectedMirrorEntries.length === 0}
+                style={{ padding: '5px 10px', backgroundColor: '#dc3545', color: 'white', border: 'none', cursor: selectedMirrorEntries.length === 0 ? 'not-allowed' : 'pointer' }}
+            >
+                Clear Selection
+            </button>
         </div>
+        
+        {/* Changed to vertical stacking */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '40px', width: '100%', marginTop: '10px' }}>
+            <RenderDataTable 
+                title="RIGHT Hand Entries" 
+                entries={rightHandEntries} 
+                handleDelete={handleDeleteEntry} 
+                handleMirror={handleMirrorEntry} 
+                selectedEntries={selectedMirrorEntries}
+                toggleSelection={toggleMirrorSelection}
+            />
+            <RenderDataTable 
+                title="LEFT Hand Entries" 
+                entries={leftHandEntries} 
+                handleDelete={handleDeleteEntry} 
+                handleMirror={handleMirrorEntry} 
+                selectedEntries={selectedMirrorEntries}
+                toggleSelection={toggleMirrorSelection}
+            />
+        </div>
+        {/* --- END MODIFIED DATA SUMMARY SECTION --- */}
       </div>
     </div>
   );
