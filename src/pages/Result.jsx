@@ -208,10 +208,22 @@ const Result = () => {
       ]);
       const thumbData = await ffmpeg.readFile("thumbnail.jpg");
       const thumbBlob = new Blob([thumbData.buffer], { type: "image/jpeg" });
+
+      // --- NEW/UPDATED: Generate GIF of the WHOLE video ---
+      await ffmpeg.exec([
+        "-i", "output.webm",
+        // Removed "-t 3" to ensure the entire video is used
+        "-vf", "fps=10,scale=320:-1:flags=lanczos", // Low fps and scale for email compatibility
+        "output.gif",
+      ]);
+      const gifData = await ffmpeg.readFile("output.gif");
+      const gifBlob = new Blob([gifData.buffer], { type: "image/gif" });
+      // --- END NEW/UPDATED: Generate GIF ---
       
       // Clean up FFmpeg memory
       await ffmpeg.deleteFile("output.webm");
       await ffmpeg.deleteFile("thumbnail.jpg");
+      await ffmpeg.deleteFile("output.gif"); // <--- ADDED: GIF cleanup
       await ffmpeg.deleteFile("list.txt");
       for (const name of fileNames) await ffmpeg.deleteFile(name);
 
@@ -229,9 +241,15 @@ const Result = () => {
       await uploadBytes(thumbRef, thumbBlob);
       const thumbURL = await getDownloadURL(thumbRef);
       
+      // --- NEW: Upload GIF to Storage ---
+      const gifRef = ref(storage, `bolo_performances/${userName}_${uniqueId}.gif`);
+      await uploadBytes(gifRef, gifBlob);
+      const gifURL = await getDownloadURL(gifRef);
+      // --- END NEW: Upload GIF ---
+      
       console.log("DEBUG: Storage Upload Complete. Video URL:", downloadURL);
 
-      // --- STEP C: SAVE EMAIL AND DATA TO FIRESTORE (DB) --- <--- NEW STEP
+      // --- STEP C: SAVE EMAIL AND DATA TO FIRESTORE (DB) ---
       console.log("DEBUG: Attempting Firestore Write to 'user_emails' collection.");
       setProcessStatus("sending_email"); 
       
@@ -241,6 +259,7 @@ const Result = () => {
           userName: userName,
           videoURL: downloadURL,
           thumbnailURL: thumbURL,
+          gifURL: gifURL, // <--- ADDED: GIF URL to Firestore
           submissionDate: new Date().toISOString(),
           totalSignsMastered: recordedSigns.length,
           averageScore: averageScore, 
@@ -251,9 +270,9 @@ const Result = () => {
       console.log("SUCCESS: Firestore Write Complete. Document should exist in 'user_emails'.");
       
       // --- STEP D: SEND EMAIL --- 
-      const SERVICE_ID = "service_3sl5dqc";
-      const TEMPLATE_ID = "template_ujom2df";
-      const PUBLIC_KEY = "6YNMQAWD1xol84C-9";
+      const SERVICE_ID = "service_u2thepz";
+      const TEMPLATE_ID = "template_lthtia6";
+      const PUBLIC_KEY = "tUMWweeJ3LuLXsDJH";
 
       const templateParams = {
         user_name: userName,
@@ -261,10 +280,13 @@ const Result = () => {
         name: userName,
         video_link: downloadURL,
         thumbnail_link: thumbURL,
+        gif_link: gifURL, // <--- ADDED: GIF URL to EmailJS parameters
         bolo_link: "https://bolo.connecthear.org",
         instagram_link: "https://www.instagram.com/connecthear",
         linkedin_link: "https://www.linkedin.com/in/arhumishtiaq",
         facebook_link: "https://www.facebook.com/connecthearofficial",
+        // You might want to populate {{message}} here:
+        // message: `Your average score was ${averageScore}% across ${totalSignsMastered} signs mastered!`,
       };
 
       await emailjs.send(SERVICE_ID, TEMPLATE_ID, templateParams, PUBLIC_KEY);
